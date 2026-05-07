@@ -1,0 +1,132 @@
+# teams-tui-go
+
+A keyboard-driven terminal UI client for Microsoft Teams, written in Go.
+
+Authenticates via **OAuth2 Device Code Flow** (no browser redirect needed), fetches your chats and messages from the **Microsoft Graph API**, and displays them in a fast, minimal TUI.
+
+---
+
+## Features
+
+- 🔐 OAuth2 Device Code Flow — authenticate with your Microsoft account, no browser redirect required
+- 💬 List all your Teams chats (1:1, group, meetings) with computed display names
+- 📨 View messages in any chat with HTML-to-text rendering (images, attachments, emoji)
+- ✏️ Send messages, including multiline via Alt+Enter
+- 🔔 Notification modes: None / Console (BEL + visual bell) / System (desktop) / Both
+- 🔄 Background polling — chats and messages refresh automatically every ~3 s
+- ⬆️ New messages bubble chats to the top of the list
+- 📌 Stable chat ordering — order only changes when new messages arrive
+- 💾 Token persistence — only authenticate once; tokens refresh automatically
+
+---
+
+## Installation
+
+### Prerequisites
+
+- Go 1.22 or later
+- A Microsoft account with access to Microsoft Teams
+
+### Build
+
+```bash
+git clone https://github.com/nospor/teams-tui-go
+cd teams-tui-go
+go build -o teams-tui-go .
+```
+
+### Install to PATH
+
+```bash
+go install github.com/nospor/teams-tui-go@latest
+```
+
+---
+
+## Configuration
+
+### Client ID (optional)
+
+By default the app uses Microsoft's public Teams client ID. To use your own Azure AD app registration:
+
+1. Follow the instructions in [AZURE_SETUP.md](AZURE_SETUP.md).
+2. Set your client ID using one of:
+
+   **Option A — environment variable:**
+   ```bash
+   cp .env.example .env
+   # Edit .env and set CLIENT_ID=<your-client-id>
+   ```
+
+   **Option B — config file** (`~/.config/teams-tui-go/config.json`):
+   ```json
+   {
+     "client_id": "your-client-id-here"
+   }
+   ```
+
+### Notification Mode
+
+Cycle through notification modes at runtime by pressing `n`. The chosen mode is automatically saved to `~/.config/teams-tui-go/config.json`.
+
+---
+
+## Usage
+
+```bash
+# Run directly
+./teams-tui-go
+
+# Or if installed
+teams-tui-go
+```
+
+On first run (or after token expiry) you will be prompted to visit a URL and enter a short code. Subsequent runs use the cached token (auto-refreshed).
+
+---
+
+## Keyboard Controls
+
+| Key | Action |
+|-----|--------|
+| `↑` / `k` | Move up in chat list |
+| `↓` / `j` | Move down in chat list |
+| `PgUp` / `K` | Scroll messages up |
+| `PgDn` / `J` | Scroll messages down |
+| `i` | Enter compose mode |
+| `Enter` | Send message |
+| `Alt+Enter` | New line in message |
+| `Esc` | Cancel compose |
+| `n` | Toggle notification mode |
+| `q` | Quit |
+
+---
+
+## File Locations
+
+| File | Purpose |
+|------|---------|
+| `~/.config/teams-tui-go/config.json` | Client ID, notification mode |
+| `~/.cache/teams-tui-go/token.json` | OAuth2 access + refresh tokens |
+| `~/.cache/teams-tui-go/profile.json` | Cached user profile |
+
+---
+
+## Development
+
+```bash
+# Run in development
+go run .
+
+# Build binary
+go build -o teams-tui-go .
+
+# Lint
+go vet ./...
+```
+
+---
+
+## License
+
+See [LICENSE](LICENSE).

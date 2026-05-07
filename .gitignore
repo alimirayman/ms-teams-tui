@@ -1,0 +1,17 @@
+# Binary
+teams-tui-go
+
+# Environment variables (may contain secrets)
+.env
+
+# Go build cache
+*.test
+*.out
+
+# IDE / editor directories
+.idea/
+.vscode/
+*.swp
+*.swo
+
+newspec.md

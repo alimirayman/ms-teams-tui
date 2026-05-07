@@ -1,0 +1,619 @@
+package main
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"golang.org/x/net/html"
+)
+
+const graphAPIBase = "https://graph.microsoft.com/v1.0"
+
+// ---------------------------------------------------------------------------
+// Data models
+// ---------------------------------------------------------------------------
+
+// ChatMember represents a participant in a chat.
+type ChatMember struct {
+	ID          *string `json:"id,omitempty"`
+	DisplayName *string `json:"displayName,omitempty"`
+	Email       *string `json:"email,omitempty"`
+}
+
+// Chat represents a Microsoft Teams chat.
+type Chat struct {
+	ID                string       `json:"id"`
+	Topic             *string      `json:"topic,omitempty"`
+	ChatType          string       `json:"chatType"`
+	LastUpdated       *string      `json:"lastUpdatedDateTime,omitempty"`
+	Members           []ChatMember `json:"-"` // populated separately
+	CachedDisplayName *string      `json:"-"` // computed, never from API
+}
+
+// Message represents a single message in a chat.
+type Message struct {
+	ID              string              `json:"id"`
+	CreatedDateTime string              `json:"createdDateTime"`
+	From            *MessageFrom        `json:"from,omitempty"`
+	Body            *MessageBody        `json:"body,omitempty"`
+	Attachments     []MessageAttachment `json:"attachments,omitempty"`
+}
+
+// MessageAttachment is a file or card attached to a message.
+type MessageAttachment struct {
+	ID          string  `json:"id"`
+	Name        *string `json:"name,omitempty"`
+	ContentType *string `json:"contentType,omitempty"`
+}
+
+// MessageFrom holds the sender information.
+type MessageFrom struct {
+	User *MessageUser `json:"user,omitempty"`
+}
+
+// MessageUser holds the sender display name.
+type MessageUser struct {
+	DisplayName *string `json:"displayName,omitempty"`
+}
+
+// MessageBody holds the message content (HTML).
+type MessageBody struct {
+	Content *string `json:"content,omitempty"`
+}
+
+// User represents the authenticated Microsoft account user.
+type User struct {
+	DisplayName       string  `json:"displayName"`
+	ID                string  `json:"id"`
+	UserPrincipalName *string `json:"userPrincipalName,omitempty"`
+}
+
+// ---------------------------------------------------------------------------
+// API response wrappers
+// ---------------------------------------------------------------------------
+
+type chatsResponse struct {
+	Value []Chat `json:"value"`
+}
+
+type membersResponse struct {
+	Value []ChatMember `json:"value"`
+}
+
+type messagesResponse struct {
+	Value []Message `json:"value"`
+}
+
+type orgResponse struct {
+	Value []struct {
+		ID string `json:"id"`
+	} `json:"value"`
+}
+
+// ---------------------------------------------------------------------------
+// HTTP helper
+// ---------------------------------------------------------------------------
+
+// graphGet performs an authenticated GET request against the Graph API.
+func graphGet(accessToken, path string) ([]byte, error) {
+	req, err := http.NewRequest(http.MethodGet, graphAPIBase+path, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("GET %s: %w", path, err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("GET %s: HTTP %d: %s", path, resp.StatusCode, body)
+	}
+	return body, nil
+}
+
+// graphPost performs an authenticated POST request against the Graph API.
+func graphPost(accessToken, path string, payload any) error {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("marshal payload: %w", err)
+	}
+	req, err := http.NewRequest(http.MethodPost, graphAPIBase+path, bytes.NewReader(data))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("POST %s: %w", path, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("POST %s: HTTP %d: %s", path, resp.StatusCode, body)
+	}
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// GetMe — current user profile with cache
+// ---------------------------------------------------------------------------
+
+// GetMe fetches the authenticated user's profile, using a local cache.
+func GetMe(accessToken string) (*User, error) {
+	cacheDir, err := GetCacheDir()
+	if err == nil {
+		profilePath := filepath.Join(cacheDir, "profile.json")
+		if data, err := os.ReadFile(profilePath); err == nil {
+			var u User
+			if json.Unmarshal(data, &u) == nil {
+				return &u, nil
+			}
+		}
+	}
+
+	body, err := graphGet(accessToken, "/me")
+	if err != nil {
+		return nil, fmt.Errorf("GetMe: %w", err)
+	}
+
+	var u User
+	if err := json.Unmarshal(body, &u); err != nil {
+		return nil, fmt.Errorf("GetMe: parse: %w", err)
+	}
+
+	// Persist to cache.
+	if cacheDir != "" {
+		_ = os.WriteFile(filepath.Join(cacheDir, "profile.json"), body, 0o600)
+	}
+	return &u, nil
+}
+
+// ---------------------------------------------------------------------------
+// GetChatMembers
+// ---------------------------------------------------------------------------
+
+// GetChatMembers returns the members of a chat. On error it returns an empty slice.
+func GetChatMembers(accessToken, chatID string) []ChatMember {
+	body, err := graphGet(accessToken, "/chats/"+chatID+"/members")
+	if err != nil {
+		return nil
+	}
+	var r membersResponse
+	if err := json.Unmarshal(body, &r); err != nil {
+		return nil
+	}
+	return r.Value
+}
+
+// ---------------------------------------------------------------------------
+// GetMessages
+// ---------------------------------------------------------------------------
+
+// GetMessages returns the messages in a chat (newest first from the API).
+func GetMessages(accessToken, chatID string) ([]Message, error) {
+	body, err := graphGet(accessToken, "/chats/"+chatID+"/messages")
+	if err != nil {
+		return nil, fmt.Errorf("GetMessages: %w", err)
+	}
+	var r messagesResponse
+	if err := json.Unmarshal(body, &r); err != nil {
+		return nil, fmt.Errorf("GetMessages: parse: %w", err)
+	}
+	return r.Value, nil
+}
+
+// ---------------------------------------------------------------------------
+// SendMessage
+// ---------------------------------------------------------------------------
+
+// SendMessage posts a message to the given chat.
+func SendMessage(accessToken, chatID, content string) error {
+	payload := map[string]any{
+		"body": map[string]string{
+			"content": content,
+		},
+	}
+	return graphPost(accessToken, "/chats/"+chatID+"/messages", payload)
+}
+
+// ---------------------------------------------------------------------------
+// MarkChatAsRead
+// ---------------------------------------------------------------------------
+
+// MarkChatAsRead marks the chat as read for the current user.
+// All errors are silently ignored so as not to disrupt the UX.
+func MarkChatAsRead(accessToken, chatID, userID string) {
+	// Fetch tenant ID.
+	body, err := graphGet(accessToken, "/organization")
+	if err != nil {
+		return
+	}
+	var org orgResponse
+	if err := json.Unmarshal(body, &org); err != nil || len(org.Value) == 0 {
+		return
+	}
+	tenantID := org.Value[0].ID
+
+	payload := map[string]any{
+		"user": map[string]string{
+			"id":       userID,
+			"tenantId": tenantID,
+		},
+	}
+	_ = graphPost(accessToken, "/chats/"+chatID+"/markChatReadForUser", payload)
+}
+
+// ---------------------------------------------------------------------------
+// GetChats — main chat list with member fetch + display name computation
+// ---------------------------------------------------------------------------
+
+// GetChats fetches the user's chats, fetches members for each,
+// detects the current user (by frequency analysis), filters the current user
+// from member lists, computes CachedDisplayName, and returns
+// (chats, detectedCurrentUserName).
+func GetChats(accessToken string) ([]Chat, *string, error) {
+	body, err := graphGet(accessToken, "/me/chats")
+	if err != nil {
+		return nil, nil, fmt.Errorf("GetChats: %w", err)
+	}
+	var r chatsResponse
+	if err := json.Unmarshal(body, &r); err != nil {
+		return nil, nil, fmt.Errorf("GetChats: parse: %w", err)
+	}
+	chats := r.Value
+
+	// Fetch members concurrently.
+	type result struct {
+		index   int
+		members []ChatMember
+	}
+	ch := make(chan result, len(chats))
+	for i, c := range chats {
+		go func(i int, c Chat) {
+			ch <- result{i, GetChatMembers(accessToken, c.ID)}
+		}(i, c)
+	}
+	for range chats {
+		res := <-ch
+		chats[res.index].Members = res.members
+	}
+
+	// Detect current user by name frequency across oneOnOne chats.
+	currentUserName := detectCurrentUser(chats)
+
+	// Filter current user from member lists and compute display names.
+	for i := range chats {
+		if currentUserName != nil {
+			chats[i].Members = filterMember(chats[i].Members, *currentUserName)
+		}
+		name := computeDisplayName(&chats[i])
+		chats[i].CachedDisplayName = &name
+	}
+
+	return chats, currentUserName, nil
+}
+
+// detectCurrentUser identifies the current user by finding the display name
+// that appears most frequently across oneOnOne chats.
+func detectCurrentUser(chats []Chat) *string {
+	freq := map[string]int{}
+	for _, c := range chats {
+		if c.ChatType != "oneOnOne" {
+			continue
+		}
+		for _, m := range c.Members {
+			if m.DisplayName != nil {
+				freq[*m.DisplayName]++
+			}
+		}
+	}
+	if len(freq) == 0 {
+		return nil
+	}
+
+	var best string
+	var bestCount int
+	for name, count := range freq {
+		if count > bestCount {
+			best = name
+			bestCount = count
+		}
+	}
+
+	// Only treat as current user if appears ≥2 times, or is the sole member in all oneOnOne chats.
+	oneOnOneCount := 0
+	for _, c := range chats {
+		if c.ChatType == "oneOnOne" {
+			oneOnOneCount++
+		}
+	}
+	if bestCount >= 2 || oneOnOneCount == 1 {
+		return &best
+	}
+	return nil
+}
+
+// filterMember removes the named member from the slice.
+func filterMember(members []ChatMember, name string) []ChatMember {
+	out := members[:0]
+	for _, m := range members {
+		if m.DisplayName == nil || *m.DisplayName != name {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+// computeDisplayName derives a human-readable display name for a chat.
+func computeDisplayName(c *Chat) string {
+	switch c.ChatType {
+	case "oneOnOne":
+		if len(c.Members) > 0 && c.Members[0].DisplayName != nil {
+			return *c.Members[0].DisplayName
+		}
+		return "Unknown"
+
+	case "group", "meeting":
+		if c.Topic != nil && *c.Topic != "" {
+			return *c.Topic
+		}
+		parts := memberAbbreviations(c.Members, 3)
+		if len(parts) > 0 {
+			return strings.Join(parts, ", ")
+		}
+		if c.ChatType == "group" {
+			return "Unnamed Group"
+		}
+		return "Unnamed Meeting"
+
+	default:
+		if c.Topic != nil && *c.Topic != "" {
+			return *c.Topic
+		}
+		parts := memberAbbreviations(c.Members, 3)
+		if len(parts) > 0 {
+			return strings.Join(parts, ", ")
+		}
+		return "Unknown Chat"
+	}
+}
+
+// memberAbbreviations returns up to n abbreviated member display names.
+func memberAbbreviations(members []ChatMember, n int) []string {
+	var out []string
+	for _, m := range members {
+		if m.DisplayName == nil {
+			continue
+		}
+		out = append(out, abbreviateName(*m.DisplayName))
+		if len(out) >= n {
+			break
+		}
+	}
+	return out
+}
+
+// abbreviateName converts "Matt Davidson" → "Matt D", single word stays as-is.
+func abbreviateName(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return ""
+	}
+	parts := strings.Fields(name)
+	if len(parts) == 1 {
+		return parts[0]
+	}
+	return parts[0] + " " + string([]rune(parts[len(parts)-1])[0])
+}
+
+// ---------------------------------------------------------------------------
+// HTML-to-text rendering
+// ---------------------------------------------------------------------------
+
+// HTMLToText converts a Teams message HTML body to plain text suitable for
+// terminal display. It returns the rendered text and a lipgloss-compatible
+// styled string (where special elements are coloured).
+func HTMLToText(htmlContent string, attachments []MessageAttachment) string {
+	if htmlContent == "" {
+		return ""
+	}
+
+	// Build an attachment lookup by ID.
+	attByID := make(map[string]MessageAttachment, len(attachments))
+	for _, a := range attachments {
+		attByID[a.ID] = a
+	}
+
+	tokenizer := html.NewTokenizer(strings.NewReader(htmlContent))
+	var sb strings.Builder
+
+	for {
+		tt := tokenizer.Next()
+		if tt == html.ErrorToken {
+			break
+		}
+
+		token := tokenizer.Token()
+
+		switch tt {
+		case html.StartTagToken, html.SelfClosingTagToken:
+			tag := token.Data
+			switch tag {
+			case "img":
+				// Extract src and alt.
+				var src, alt string
+				for _, a := range token.Attr {
+					switch a.Key {
+					case "src":
+						src = a.Val
+					case "alt":
+						alt = a.Val
+					}
+				}
+				label := alt
+				if label == "" && src != "" {
+					// Use filename from src if alt is empty.
+					parts := strings.Split(src, "/")
+					label = parts[len(parts)-1]
+				}
+				if label == "" {
+					label = "Pasted Image"
+				}
+				sb.WriteString("[IMG:" + label + "]")
+
+			case "attachment":
+				var attID string
+				for _, a := range token.Attr {
+					if a.Key == "id" {
+						attID = a.Val
+						break
+					}
+				}
+				// Skip messageReference attachments.
+				if att, ok := attByID[attID]; ok {
+					if att.ContentType != nil && *att.ContentType == "messageReference" {
+						continue
+					}
+					icon := getAttachmentIcon(att)
+					name := ""
+					if att.Name != nil {
+						name = *att.Name
+					}
+					sb.WriteString(icon + " " + name)
+				}
+
+			case "emoji":
+				var altText string
+				for _, a := range token.Attr {
+					if a.Key == "alt" {
+						altText = a.Val
+						break
+					}
+				}
+				if altText != "" {
+					sb.WriteString(altText)
+				}
+
+			case "br":
+				sb.WriteRune('\n')
+
+			// Block-level elements that should be silently removed (start tag only).
+			case "p", "div", "li":
+				// Do nothing — closing tag will emit newline.
+			}
+
+		case html.EndTagToken:
+			tag := token.Data
+			switch tag {
+			case "p", "div", "li":
+				sb.WriteRune('\n')
+			case "br":
+				sb.WriteRune('\n')
+			}
+
+		case html.TextToken:
+			text := html.UnescapeString(token.Data)
+			sb.WriteString(text)
+		}
+	}
+
+	result := sb.String()
+
+	// Collapse runs of more than 2 consecutive newlines.
+	for strings.Contains(result, "\n\n\n") {
+		result = strings.ReplaceAll(result, "\n\n\n", "\n\n")
+	}
+
+	return strings.TrimSpace(result)
+}
+
+// getAttachmentIcon returns an emoji icon based on the attachment's file extension
+// or content type.
+func getAttachmentIcon(att MessageAttachment) string {
+	name := ""
+	if att.Name != nil {
+		name = strings.ToLower(*att.Name)
+	}
+	ct := ""
+	if att.ContentType != nil {
+		ct = strings.ToLower(*att.ContentType)
+	}
+
+	// Check extension first.
+	ext := ""
+	if idx := strings.LastIndex(name, "."); idx >= 0 {
+		ext = name[idx+1:]
+	}
+
+	switch ext {
+	case "jpg", "jpeg", "png", "gif", "bmp", "svg", "webp":
+		return "🖼️"
+	case "pdf", "txt":
+		return "📄"
+	case "doc", "docx":
+		return "📝"
+	case "xls", "xlsx", "csv":
+		return "📊"
+	case "ppt", "pptx":
+		return "📊"
+	case "mp4", "avi", "mov", "mkv", "webm":
+		return "🎥"
+	case "mp3", "wav", "ogg", "flac":
+		return "🎵"
+	case "zip", "rar", "7z", "tar", "gz":
+		return "📦"
+	case "html", "htm":
+		return "🌐"
+	case "json", "xml":
+		return "📋"
+	}
+
+	// Fall back to content type.
+	switch {
+	case strings.HasPrefix(ct, "image/"):
+		return "🖼️"
+	case strings.HasPrefix(ct, "video/"):
+		return "🎥"
+	case strings.HasPrefix(ct, "audio/"):
+		return "🎵"
+	case strings.Contains(ct, "word") || strings.Contains(ct, "document"):
+		return "📝"
+	case strings.Contains(ct, "excel") || strings.Contains(ct, "spreadsheet"):
+		return "📊"
+	case strings.Contains(ct, "powerpoint") || strings.Contains(ct, "presentation"):
+		return "📊"
+	case strings.Contains(ct, "zip") || strings.Contains(ct, "archive"):
+		return "📦"
+	}
+
+	return "📎"
+}
+
+// GetTenantID fetches the first tenant ID from the /organization endpoint.
+func GetTenantID(accessToken string) (string, error) {
+	body, err := graphGet(accessToken, "/organization")
+	if err != nil {
+		return "", err
+	}
+	var org orgResponse
+	if err := json.Unmarshal(body, &org); err != nil || len(org.Value) == 0 {
+		return "", fmt.Errorf("could not parse organization response")
+	}
+	return org.Value[0].ID, nil
+}
+
+
