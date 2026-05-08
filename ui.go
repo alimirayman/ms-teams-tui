@@ -242,6 +242,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.lastMsgID[chat.ID] = newLastID
 						m.lastMsgTime[chat.ID] = newTime
 						m.promoteChat(chat.ID)
+
+						// If we sent the message, mark it as read immediately.
+						if m.isOwn(msg.Messages[0]) {
+							m.lastReadMsgID[chat.ID] = newLastID
+						}
 					}
 				}
 			}
@@ -265,6 +270,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.lastMsgID[msg.ChatID] = msg.Message.ID
 		newTime, _ := time.Parse(time.RFC3339Nano, msg.Message.CreatedDateTime)
 		m.lastMsgTime[msg.ChatID] = newTime
+
+		// If we sent the message (e.g. from another client), mark it as read.
+		if m.isOwn(msg.Message) {
+			m.lastReadMsgID[msg.ChatID] = msg.Message.ID
+			m.promoteChat(msg.ChatID)
+			m = m.rebuildChatList()
+			break // No notification needed for own messages
+		}
 
 		// Trigger notification.
 		senderName := ""
@@ -584,15 +597,6 @@ func (m Model) renderMessages(w, h int) string {
 	var lines []string
 	var prevSender string
 	var prevTime time.Time
-	isOwn := func(msg Message) bool {
-		if m.app.CurrentUserName == nil {
-			return false
-		}
-		if msg.From == nil || msg.From.User == nil || msg.From.User.DisplayName == nil {
-			return false
-		}
-		return *msg.From.User.DisplayName == *m.app.CurrentUserName
-	}
 
 	// Iterate in reverse (slice is newest-first) → append → shows newest at bottom.
 	for i := len(msgs) - 1; i >= 0; i-- {
@@ -617,7 +621,7 @@ func (m Model) renderMessages(w, h int) string {
 				dateStr = msgTime.Format("Jan 02 15:04")
 			}
 			var header string
-			if isOwn(msg) {
+			if m.isOwn(msg) {
 				h := lipgloss.NewStyle().Foreground(colGreen).Render(dateStr + " Me")
 				header = padLeft(h, w)
 			} else {
@@ -635,7 +639,7 @@ func (m Model) renderMessages(w, h int) string {
 		}
 
 		for _, line := range wordWrap(body, maxW) {
-			if isOwn(msg) {
+			if m.isOwn(msg) {
 				lines = append(lines, padLeft(line, w))
 			} else {
 				lines = append(lines, line)
@@ -824,6 +828,16 @@ func (m Model) isUnread(c Chat) bool {
 	}
 
 	return false
+}
+
+func (m Model) isOwn(msg Message) bool {
+	if m.app.CurrentUserName == nil {
+		return false
+	}
+	if msg.From == nil || msg.From.User == nil || msg.From.User.DisplayName == nil {
+		return false
+	}
+	return *msg.From.User.DisplayName == *m.app.CurrentUserName
 }
 
 // ---------------------------------------------------------------------------
