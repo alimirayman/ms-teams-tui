@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/charmbracelet/lipgloss"
 	"golang.org/x/net/html"
@@ -230,9 +231,24 @@ func GetMessages(accessToken, chatID string) ([]Message, error) {
 
 // SendMessage posts a message to the given chat.
 func SendMessage(accessToken, chatID, content string) error {
+	// Only use <pre> if there's actual indentation.
+	// For simple multi-line, plain text works better and avoids double-spacing issues.
+	hasIndentation := strings.HasPrefix(content, " ") || strings.HasPrefix(content, "\t") ||
+		strings.Contains(content, "\n ") || strings.Contains(content, "\n\t")
+
+	if !hasIndentation {
+		payload := map[string]any{
+			"body": map[string]any{
+				"content": content,
+			},
+		}
+		return graphPost(accessToken, "/chats/"+chatID+"/messages", payload)
+	}
+
 	payload := map[string]any{
-		"body": map[string]string{
-			"content": content,
+		"body": map[string]any{
+			"contentType": "html",
+			"content":     "<pre>" + html.EscapeString(content) + "</pre>",
 		},
 	}
 	return graphPost(accessToken, "/chats/"+chatID+"/messages", payload)
@@ -452,6 +468,8 @@ func HTMLToText(htmlContent string, attachments []MessageAttachment) string {
 
 	tokenizer := html.NewTokenizer(strings.NewReader(htmlContent))
 	var sb strings.Builder
+	var lastChar rune
+	var tagAddedNewline bool
 
 	for {
 		tt := tokenizer.Next()
@@ -468,6 +486,7 @@ func HTMLToText(htmlContent string, attachments []MessageAttachment) string {
 			case "img":
 				orangeText := lipgloss.NewStyle().Foreground(lipgloss.Color("#FF8700")).Render("image")
 				sb.WriteString("🖼️  " + orangeText)
+				lastChar = 'e' // last char of "image" (approx)
 
 			case "attachment":
 				var attID string
@@ -484,6 +503,7 @@ func HTMLToText(htmlContent string, attachments []MessageAttachment) string {
 					}
 					orangeText := lipgloss.NewStyle().Foreground(lipgloss.Color("#FF8700")).Render("Attachment")
 					sb.WriteString("📎 " + orangeText)
+					lastChar = 't' // last char of "Attachment"
 				}
 
 			case "emoji":
@@ -496,28 +516,54 @@ func HTMLToText(htmlContent string, attachments []MessageAttachment) string {
 				}
 				if altText != "" {
 					sb.WriteString(altText)
+					r, _ := utf8.DecodeLastRuneInString(altText)
+					lastChar = r
 				}
 
 			case "br":
-				sb.WriteRune('\n')
+				if lastChar != '\n' && sb.Len() > 0 {
+					sb.WriteRune('\n')
+					lastChar = '\n'
+				}
+				tagAddedNewline = true
 
 			// Block-level elements that should be silently removed (start tag only).
-			case "p", "div", "li":
+			case "p", "div", "li", "pre":
 				// Do nothing — closing tag will emit newline.
 			}
 
 		case html.EndTagToken:
 			tag := token.Data
 			switch tag {
-			case "p", "div", "li":
-				sb.WriteRune('\n')
+			case "p", "div", "li", "pre":
+				if lastChar != '\n' && sb.Len() > 0 {
+					sb.WriteRune('\n')
+					lastChar = '\n'
+				}
+				tagAddedNewline = true
 			case "br":
-				sb.WriteRune('\n')
+				if lastChar != '\n' && sb.Len() > 0 {
+					sb.WriteRune('\n')
+					lastChar = '\n'
+				}
+				tagAddedNewline = true
 			}
 
 		case html.TextToken:
 			text := html.UnescapeString(token.Data)
-			sb.WriteString(text)
+			if tagAddedNewline {
+				if strings.HasPrefix(text, "\n") {
+					text = text[1:]
+				} else if strings.HasPrefix(text, "\r\n") {
+					text = text[2:]
+				}
+				tagAddedNewline = false
+			}
+			if text != "" {
+				sb.WriteString(text)
+				r, _ := utf8.DecodeLastRuneInString(text)
+				lastChar = r
+			}
 		}
 	}
 
@@ -528,7 +574,7 @@ func HTMLToText(htmlContent string, attachments []MessageAttachment) string {
 		result = strings.ReplaceAll(result, "\n\n\n", "\n\n")
 	}
 
-	return strings.TrimSpace(result)
+	return strings.Trim(result, "\n\r")
 }
 
 // getAttachmentIcon returns an emoji icon based on the attachment's file extension

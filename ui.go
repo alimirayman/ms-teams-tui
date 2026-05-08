@@ -411,7 +411,7 @@ func (m Model) handleInputModeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		return m, nil
 
 	case "enter":
-		content := strings.TrimSpace(m.textarea.Value())
+		content := strings.Trim(m.textarea.Value(), "\n\r")
 		if content == "" {
 			return m, nil
 		}
@@ -638,12 +638,25 @@ func (m Model) renderMessages(w, h int) string {
 			body = HTMLToText(*msg.Body.Content, msg.Attachments)
 		}
 
-		for _, line := range wordWrap(body, maxW) {
-			if m.isOwn(msg) {
-				lines = append(lines, padLeft(line, w))
-			} else {
-				lines = append(lines, line)
+		msgLines := wordWrap(body, maxW)
+		padding := 0
+		if m.isOwn(msg) {
+			maxMsgW := 0
+			for _, l := range msgLines {
+				lw := lipgloss.Width(l)
+				if lw > maxMsgW {
+					maxMsgW = lw
+				}
 			}
+			padding = w - maxMsgW
+			if padding < 0 {
+				padding = 0
+			}
+		}
+
+		padStr := strings.Repeat(" ", padding)
+		for _, line := range msgLines {
+			lines = append(lines, padStr+line)
 		}
 	}
 
@@ -724,32 +737,58 @@ func padLeft(s string, w int) string {
 	return strings.Repeat(" ", pad) + s
 }
 
-// wordWrap breaks s into lines of at most maxW runes.
+// wordWrap breaks s into lines of at most maxW runes, preserving whitespace.
 func wordWrap(s string, maxW int) []string {
 	if maxW <= 0 {
 		return []string{s}
 	}
 	var out []string
-	for _, para := range strings.Split(s, "\n") {
-		words := strings.Fields(para)
-		if len(words) == 0 {
+	for _, line := range strings.Split(s, "\n") {
+		if line == "" {
 			out = append(out, "")
 			continue
 		}
-		line := ""
-		for _, w := range words {
-			if line == "" {
-				line = w
-			} else if utf8.RuneCountInString(line)+1+utf8.RuneCountInString(w) <= maxW {
-				line += " " + w
+
+		// While the line is too long, find a place to break.
+		for lipgloss.Width(line) > maxW {
+			breakIdx := -1
+			currW := 0
+			runes := []rune(line)
+			for i, r := range runes {
+				rw := lipgloss.Width(string(r))
+				if currW+rw > maxW {
+					break
+				}
+				if r == ' ' || r == '\t' {
+					breakIdx = i
+				}
+				currW += rw
+			}
+
+			if breakIdx == -1 {
+				// No space found, force break at maxW.
+				fitCount := 0
+				fitW := 0
+				for _, r := range runes {
+					rw := lipgloss.Width(string(r))
+					if fitW+rw > maxW {
+						break
+					}
+					fitW += rw
+					fitCount++
+				}
+				if fitCount == 0 && len(runes) > 0 {
+					fitCount = 1
+				}
+				out = append(out, string(runes[:fitCount]))
+				line = string(runes[fitCount:])
 			} else {
-				out = append(out, line)
-				line = w
+				// Break at space.
+				out = append(out, string(runes[:breakIdx]))
+				line = string(runes[breakIdx+1:])
 			}
 		}
-		if line != "" {
-			out = append(out, line)
-		}
+		out = append(out, line)
 	}
 	return out
 }
