@@ -34,8 +34,14 @@ type Chat struct {
 	Topic             *string      `json:"topic,omitempty"`
 	ChatType          string       `json:"chatType"`
 	LastUpdated       *string      `json:"lastUpdatedDateTime,omitempty"`
+	Viewpoint         *ChatViewpoint `json:"viewpoint,omitempty"`
 	Members           []ChatMember `json:"-"` // populated separately
 	CachedDisplayName *string      `json:"-"` // computed, never from API
+}
+
+// ChatViewpoint contains the read state for the current user.
+type ChatViewpoint struct {
+	LastMessageReadDateTime string `json:"lastMessageReadDateTime"`
 }
 
 // Message represents a single message in a chat.

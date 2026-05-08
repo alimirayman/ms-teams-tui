@@ -105,8 +105,9 @@ type chatTimestamp struct {
 }
 
 // loadInitialChatOrder concurrently fetches the last message for each chat
-// and returns the chats sorted by most recent message timestamp (descending).
-func loadInitialChatOrder(accessToken string, chats []Chat) ([]Chat, map[string]string) {
+// and returns the chats sorted by most recent message timestamp (descending),
+// along with the last message IDs and timestamps.
+func loadInitialChatOrder(accessToken string, chats []Chat) ([]Chat, map[string]string, map[string]time.Time) {
 	type result struct {
 		index     int
 		latestMsg time.Time
@@ -148,9 +149,13 @@ func loadInitialChatOrder(accessToken string, chats []Chat) ([]Chat, map[string]
 	wg.Wait()
 
 	lastMsgIDs := make(map[string]string)
+	lastMsgTimes := make(map[string]time.Time)
 	for i, c := range chats {
 		if results[i].lastMsgID != "" {
 			lastMsgIDs[c.ID] = results[i].lastMsgID
+		}
+		if !results[i].latestMsg.IsZero() {
+			lastMsgTimes[c.ID] = results[i].latestMsg
 		}
 	}
 
@@ -183,7 +188,7 @@ func loadInitialChatOrder(accessToken string, chats []Chat) ([]Chat, map[string]
 		chats[i] = cw.chat
 	}
 
-	return chats, lastMsgIDs
+	return chats, lastMsgIDs, lastMsgTimes
 }
 
 // ---------------------------------------------------------------------------
@@ -222,7 +227,8 @@ func main() {
 
 	// 5 & 6. Sort chats by most recent message.
 	var lastMsgIDs map[string]string
-	chats, lastMsgIDs = loadInitialChatOrder(accessToken, chats)
+	var lastMsgTimes map[string]time.Time
+	chats, lastMsgIDs, lastMsgTimes = loadInitialChatOrder(accessToken, chats)
 
 	// 7 & 8. Initialise application state.
 	app := NewApp()
@@ -241,6 +247,7 @@ func main() {
 	model := NewModel(app, clientID, me.ID)
 	model.latestChats = chats
 	model.lastMsgID = lastMsgIDs
+	model.lastMsgTime = lastMsgTimes
 	stableOrder := make([]string, len(chats))
 	for i, c := range chats {
 		stableOrder[i] = c.ID

@@ -88,8 +88,9 @@ type Model struct {
 	// Stable ordering of chat IDs.
 	stableChatOrder []string
 
-	// Track last-seen message IDs per chat for new-message detection.
-	lastMsgID map[string]string
+	// Track last-seen message IDs and timestamps per chat.
+	lastMsgID   map[string]string
+	lastMsgTime map[string]time.Time
 
 	// Track latest chats from the API (before applying stable order).
 	latestChats []Chat
@@ -100,6 +101,12 @@ type Model struct {
 
 	// Which chat index was selected when we last issued a message load.
 	lastRefreshIndex int
+
+	// Track last-read message IDs per chat to avoid redundant API calls.
+	lastReadMsgID map[string]string
+
+	// Track application focus.
+	focused bool
 }
 
 // NewModel creates the initial Bubble Tea model.
@@ -110,11 +117,14 @@ func NewModel(app *App, clientID, userID string) Model {
 	ta.CharLimit = 0
 
 	return Model{
-		app:      app,
-		clientID: clientID,
-		userID:   userID,
-		textarea: ta,
-		lastMsgID: make(map[string]string),
+		app:           app,
+		clientID:      clientID,
+		userID:        userID,
+		textarea:      ta,
+		lastMsgID:     make(map[string]string),
+		lastMsgTime:   make(map[string]time.Time),
+		lastReadMsgID: make(map[string]string),
+		focused:       true,
 	}
 }
 
@@ -127,6 +137,10 @@ func (m Model) Init() tea.Cmd {
 	return tea.Batch(
 		tickCmd(),
 		loadChatsCmd(m.clientID),
+		func() tea.Msg {
+			fmt.Print("\x1b[?1004h") // Enable focus reporting
+			return nil
+		},
 	)
 }
 
@@ -221,24 +235,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// If there is a new message, move this chat to the top.
 			if len(msg.Messages) > 0 {
 				newLastID := msg.Messages[0].ID // API returns newest first
+				newTime, _ := time.Parse(time.RFC3339Nano, msg.Messages[0].CreatedDateTime)
 				chat := m.app.GetSelectedChat()
 				if chat != nil {
 					if old, ok := m.lastMsgID[chat.ID]; !ok || old != newLastID {
 						m.lastMsgID[chat.ID] = newLastID
+						m.lastMsgTime[chat.ID] = newTime
 						m.promoteChat(chat.ID)
 					}
 				}
 			}
-
-			// Mark chat as read (fire and forget).
-			if chat := m.app.GetSelectedChat(); chat != nil {
-				go MarkChatAsRead(func() string {
-					t, _ := GetValidTokenSilent(m.clientID)
-					return t
-				}(), chat.ID, m.userID)
-			}
 		}
 		m.updateScroll()
+
+	// ── Focus / Blur ─────────────────────────────────────────────────────
+	case tea.FocusMsg:
+		m.focused = true
+		m = m.markRead()
+
+	case tea.BlurMsg:
+		m.focused = false
 
 	// ── New message in non-selected chat ─────────────────────────────────
 	case MsgNewMessage:
@@ -247,6 +263,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			break // not actually new
 		}
 		m.lastMsgID[msg.ChatID] = msg.Message.ID
+		newTime, _ := time.Parse(time.RFC3339Nano, msg.Message.CreatedDateTime)
+		m.lastMsgTime[msg.ChatID] = newTime
 
 		// Trigger notification.
 		senderName := ""
@@ -286,6 +304,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	// ── Keyboard input ────────────────────────────────────────────────────
 	case tea.KeyMsg:
+		m = m.markRead()
 		var cmd tea.Cmd
 		m, cmd = m.handleKey(msg)
 		if cmd != nil {
@@ -362,6 +381,7 @@ func (m Model) handleNormalModeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		m.app.SetLoadingMessages(true)
 		m.app.SnapToBottom = true
 		if chat := m.app.GetSelectedChat(); chat != nil {
+			m = m.markRead()
 			return m, loadMessagesCmd(m.clientID, chat.ID, m.app.SelectedIndex)
 		}
 	}
@@ -511,19 +531,27 @@ func (m Model) renderChatList(w, h int) string {
 		}
 
 		labelStr := "[" + chatType + "] " + displayName
+		unread := m.isUnread(c)
+		if unread {
+			labelStr = "● " + labelStr
+		}
 
 		var label string
 		if i == m.app.SelectedIndex {
 			label = lipgloss.NewStyle().
 				Foreground(colYellow).
-				Bold(true).
+				Bold(unread).
 				Background(colDarkGray).
 				Width(w).
 				MaxWidth(w).
 				Render(labelStr)
 		} else {
 			typeTag := lipgloss.NewStyle().Foreground(colCyan).Render("[" + chatType + "]")
-			label = lipgloss.NewStyle().MaxWidth(w).Render(typeTag + " " + displayName)
+			base := typeTag + " " + displayName
+			if unread {
+				base = lipgloss.NewStyle().Bold(true).Render("● " + base)
+			}
+			label = lipgloss.NewStyle().MaxWidth(w).Render(base)
 		}
 		lines = append(lines, label)
 	}
@@ -738,6 +766,64 @@ func messagesEqual(a, b []Message) bool {
 		return true
 	}
 	return a[0].ID == b[0].ID
+}
+
+func (m Model) markRead() Model {
+	if !m.focused {
+		return m
+	}
+	chat := m.app.GetSelectedChat()
+	if chat == nil {
+		return m
+	}
+
+	lastID := m.lastMsgID[chat.ID]
+	if lastID == "" && len(m.app.Messages) > 0 {
+		lastID = m.app.Messages[0].ID
+	}
+
+	if lastID != "" && m.lastReadMsgID[chat.ID] != lastID {
+		m.lastReadMsgID[chat.ID] = lastID
+		go MarkChatAsRead(func() string {
+			t, _ := GetValidTokenSilent(m.clientID)
+			return t
+		}(), chat.ID, m.userID)
+	}
+	return m
+}
+
+func (m Model) isUnread(c Chat) bool {
+	// If it's the currently selected chat, we consider it read (or about to be).
+	// However, to keep the UI consistent, let's only rely on the IDs.
+	
+	lastID, hasLast := m.lastMsgID[c.ID]
+	if !hasLast {
+		return false
+	}
+	
+	// Check local read state first.
+	if readID, ok := m.lastReadMsgID[c.ID]; ok && readID == lastID {
+		return false
+	}
+
+	// If we have a local lastReadMsgID but it's not the lastID, it's definitely unread
+	// (unless we were about to fall back to viewpoint).
+	if _, ok := m.lastReadMsgID[c.ID]; ok {
+		return true
+	}
+
+	// Fallback to server-side viewpoint.
+	if c.Viewpoint != nil {
+		readTime, _ := time.Parse(time.RFC3339Nano, c.Viewpoint.LastMessageReadDateTime)
+		lastTime := m.lastMsgTime[c.ID]
+		if !lastTime.IsZero() && !readTime.IsZero() {
+			// If latest message is newer than last read time, it's unread.
+			// Add 1s buffer for safety.
+			return lastTime.After(readTime.Add(time.Second))
+		}
+	}
+
+	return false
 }
 
 // ---------------------------------------------------------------------------
