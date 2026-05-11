@@ -129,8 +129,9 @@ On first run (or after token expiry) you will be prompted to visit a URL and ent
 | `Alt+Enter`  | New line in message                                  |
 | `Esc`        | Cancel compose                                       |
 | `n`          | Toggle notification mode                             |
-| `m`          | Enter/Exit **Message Mode** (to select/react/delete) |
+| `m`          | Enter/Exit **Message Mode** (to select/react/delete/copy) |
 | `r`          | React to selected message (in Message Mode)          |
+| `y`          | Copy (yank) message text (in Message Mode)           |
 | `d`          | Delete selected message (in Message Mode)            |
 | `1-6`        | Send reaction (in Reaction Mode)                     |
 | `q`          | Quit                                                 |

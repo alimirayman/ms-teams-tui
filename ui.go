@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/atotto/clipboard"
 )
 
 // ---------------------------------------------------------------------------
@@ -351,6 +352,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 }
 
 func (m Model) handleNormalModeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
+	if m.app.DeleteConfirmMode {
+		return m.handleDeleteConfirmModeKey(msg)
+	}
 	if m.app.ReactionMode {
 		return m.handleReactionModeKey(msg)
 	}
@@ -471,6 +475,32 @@ func (m Model) handleMessageSelectionModeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	case "r":
 		m.app.ReactionMode = true
 		return m, nil
+
+	case "y":
+		if m.app.MessageSelectedIndex < len(m.app.Messages) {
+			msgObj := m.app.Messages[m.app.MessageSelectedIndex]
+			if msgObj.Body != nil && msgObj.Body.Content != nil {
+				text := HTMLToText(*msgObj.Body.Content, msgObj.Attachments)
+				if err := clipboard.WriteAll(text); err == nil {
+					m.app.Status = "Message copied to clipboard"
+				} else {
+					m.app.Status = "Clipboard error: " + err.Error()
+				}
+			}
+			m.app.MessageSelectionMode = false
+		}
+		return m, nil
+
+	case "d":
+		if m.app.MessageSelectedIndex < len(m.app.Messages) {
+			msgObj := m.app.Messages[m.app.MessageSelectedIndex]
+			if m.isOwn(msgObj) {
+				m.app.DeleteConfirmMode = true
+			} else {
+				m.app.Status = "Cannot delete messages from others"
+			}
+		}
+		return m, nil
 	}
 	return m, nil
 }
@@ -526,6 +556,22 @@ func (m Model) handleReactionModeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m Model) handleDeleteConfirmModeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
+	switch msg.String() {
+	case "y", "Y":
+		m.app.DeleteConfirmMode = false
+		m.app.MessageSelectionMode = false
+		chat := m.app.GetSelectedChat()
+		if chat != nil && m.app.MessageSelectedIndex < len(m.app.Messages) {
+			msgObj := m.app.Messages[m.app.MessageSelectedIndex]
+			return m, deleteMessageCmd(m.clientID, chat.ID, msgObj.ID)
+		}
+	case "n", "N", "esc":
+		m.app.DeleteConfirmMode = false
+	}
+	return m, nil
+}
+
 // ---------------------------------------------------------------------------
 // View
 // ---------------------------------------------------------------------------
@@ -559,7 +605,7 @@ func (m Model) renderRightPanel(w, h int) string {
 	if !m.app.InputMode {
 		title := "Messages (i:compose, m:select, K/J:scroll)"
 		if m.app.MessageSelectionMode {
-			title = "MESSAGE MODE (j/k:nav, r:react, ESC/m:exit)"
+			title = "MESSAGE MODE (j/k:nav, r:react, y:yank, d:delete, ESC/m:exit)"
 		}
 		msgContent := m.renderMessages(w, h-1)
 		return normalBorder.Width(w).Height(h).
@@ -830,6 +876,13 @@ func (m Model) renderMessages(w, h int) string {
 // ---------------------------------------------------------------------------
 
 func (m Model) renderStatusBar(w int) string {
+	if m.app.DeleteConfirmMode {
+		return bellBorder.Width(w - 2).Height(1).Render(
+			lipgloss.NewStyle().Foreground(colRed).Bold(true).Render(
+				"DELETE MESSAGE? (y:yes / n:no)",
+			),
+		)
+	}
 	if m.app.ReactionMode {
 		return normalBorder.Width(w - 2).Height(1).Render(
 			lipgloss.NewStyle().Foreground(colYellow).Render(
@@ -949,6 +1002,18 @@ func messagesEqual(a, b []Message) bool {
 	}
 	for i := range a {
 		if a[i].ID != b[i].ID {
+			return false
+		}
+		// Compare body content.
+		contentA := ""
+		if a[i].Body != nil && a[i].Body.Content != nil {
+			contentA = *a[i].Body.Content
+		}
+		contentB := ""
+		if b[i].Body != nil && b[i].Body.Content != nil {
+			contentB = *b[i].Body.Content
+		}
+		if contentA != contentB {
 			return false
 		}
 		if len(a[i].Reactions) != len(b[i].Reactions) {
