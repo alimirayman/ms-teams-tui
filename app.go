@@ -79,6 +79,9 @@ type App struct {
 	MaxScroll       int
 	ChatScrollOffset int
 	SnapToBottom    bool
+	MessageSelectedIndex int
+	MessageSelectionMode bool
+	ReactionMode         bool
 	NotificationMode NotificationMode
 	NotificationShowPreview bool
 	NotificationPreviewLen  int
@@ -109,8 +112,29 @@ func (a *App) SetCurrentUser(name string) {
 
 // SetMessages replaces the current message list and clears the loading flag.
 func (a *App) SetMessages(messages []Message) {
+	oldMsgs := a.Messages
 	a.Messages = messages
 	a.LoadingMessages = false
+
+	// Maintain selection by ID if in message selection mode.
+	if a.MessageSelectionMode && len(oldMsgs) > 0 && a.MessageSelectedIndex < len(oldMsgs) {
+		selectedID := oldMsgs[a.MessageSelectedIndex].ID
+		for i, m := range messages {
+			if m.ID == selectedID {
+				a.MessageSelectedIndex = i
+				return
+			}
+		}
+	}
+
+	// Clamp index if message was deleted or we're out of bounds.
+	if a.MessageSelectedIndex >= len(messages) {
+		if len(messages) > 0 {
+			a.MessageSelectedIndex = len(messages) - 1
+		} else {
+			a.MessageSelectedIndex = 0
+		}
+	}
 }
 
 // SetLoadingMessages toggles the loading indicator.

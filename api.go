@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/charmbracelet/lipgloss"
@@ -116,8 +117,27 @@ type orgResponse struct {
 // HTTP helper
 // ---------------------------------------------------------------------------
 
-// graphGet performs an authenticated GET request against the Graph API.
+// graphGet performs an authenticated GET request against the Graph API with retries.
 func graphGet(accessToken, path string) ([]byte, error) {
+	var body []byte
+	var err error
+	for i := 0; i < 3; i++ {
+		body, err = graphGetOnce(accessToken, path)
+		if err == nil {
+			return body, nil
+		}
+		// Retry on transient server errors.
+		if strings.Contains(err.Error(), "502") || strings.Contains(err.Error(), "503") || strings.Contains(err.Error(), "504") {
+			time.Sleep(time.Duration(i+1) * 500 * time.Millisecond)
+			continue
+		}
+		break
+	}
+	return body, err
+}
+
+// graphGetOnce performs a single authenticated GET request.
+func graphGetOnce(accessToken, path string) ([]byte, error) {
 	req, err := http.NewRequest(http.MethodGet, graphAPIBase+path, nil)
 	if err != nil {
 		return nil, err
@@ -229,6 +249,14 @@ func GetMessages(accessToken, chatID string) ([]Message, error) {
 	if err := json.Unmarshal(body, &r); err != nil {
 		return nil, fmt.Errorf("GetMessages: parse: %w", err)
 	}
+
+	// Ensure messages are sorted by creation time (newest first).
+	// This prevents messages from "jumping" if the API returns them in a different
+	// order (e.g. after a reaction updates the lastModifiedDateTime).
+	sort.Slice(r.Value, func(i, j int) bool {
+		return r.Value[i].CreatedDateTime > r.Value[j].CreatedDateTime
+	})
+
 	return r.Value, nil
 }
 
@@ -274,6 +302,18 @@ func SendMessage(accessToken, chatID, content string) error {
 		},
 	}
 	return graphPost(accessToken, "/chats/"+chatID+"/messages", payload)
+}
+
+// ---------------------------------------------------------------------------
+// SetReaction
+// ---------------------------------------------------------------------------
+
+// SetReaction adds or updates a reaction on a message.
+func SetReaction(accessToken, chatID, messageID, reactionType string) error {
+	payload := map[string]any{
+		"reactionType": reactionType,
+	}
+	return graphPost(accessToken, "/chats/"+chatID+"/messages/"+messageID+"/setReaction", payload)
 }
 
 // ---------------------------------------------------------------------------

@@ -229,8 +229,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		prev := m.app.Messages
 		// Only update if content changed.
 		if !messagesEqual(prev, msg.Messages) {
+			isNewMessage := len(prev) == 0 || (len(msg.Messages) > 0 && prev[0].ID != msg.Messages[0].ID)
 			m.app.SetMessages(msg.Messages)
-			m.app.SnapToBottom = true
+			
+			// Only snap to bottom if a new message arrived and the user isn't 
+			// currently busy selecting/reacting to an older message.
+			if isNewMessage && !m.app.MessageSelectionMode {
+				m.app.SnapToBottom = true
+			}
 
 			// If there is a new message, move this chat to the top.
 			if len(msg.Messages) > 0 {
@@ -345,6 +351,13 @@ func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 }
 
 func (m Model) handleNormalModeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
+	if m.app.ReactionMode {
+		return m.handleReactionModeKey(msg)
+	}
+	if m.app.MessageSelectionMode {
+		return m.handleMessageSelectionModeKey(msg)
+	}
+
 	prevIdx := m.app.SelectedIndex
 
 	switch msg.String() {
@@ -385,6 +398,12 @@ func (m Model) handleNormalModeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		if m.app.ScrollOffset >= m.app.MaxScroll {
 			m.app.ScrollOffset = m.app.MaxScroll
 			m.app.SnapToBottom = true
+		}
+
+	case "m":
+		if len(m.app.Messages) > 0 {
+			m.app.MessageSelectionMode = true
+			m.app.MessageSelectedIndex = 0 // start at the newest message (at index 0 in the API list)
 		}
 	}
 
@@ -433,6 +452,52 @@ func (m Model) handleInputModeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m Model) handleMessageSelectionModeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "m":
+		m.app.MessageSelectionMode = false
+		return m, nil
+
+	case "j", "down":
+		if m.app.MessageSelectedIndex > 0 {
+			m.app.MessageSelectedIndex--
+		}
+
+	case "k", "up":
+		if m.app.MessageSelectedIndex < len(m.app.Messages)-1 {
+			m.app.MessageSelectedIndex++
+		}
+
+	case "r":
+		m.app.ReactionMode = true
+		return m, nil
+	}
+	return m, nil
+}
+
+func (m Model) handleReactionModeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "r":
+		m.app.ReactionMode = false
+		return m, nil
+
+	case "1", "2", "3", "4", "5", "6":
+		types := []string{"👍", "❤️", "😂", "😮", "😢", "😡"}
+		idx := int(msg.String()[0] - '1')
+		if idx >= 0 && idx < len(types) {
+			reactionType := types[idx]
+			chat := m.app.GetSelectedChat()
+			if chat != nil && m.app.MessageSelectedIndex < len(m.app.Messages) {
+				msgID := m.app.Messages[m.app.MessageSelectedIndex].ID
+				m.app.ReactionMode = false
+				m.app.MessageSelectionMode = false
+				return m, setReactionCmd(m.clientID, chat.ID, msgID, reactionType)
+			}
+		}
+	}
+	return m, nil
+}
+
 // ---------------------------------------------------------------------------
 // View
 // ---------------------------------------------------------------------------
@@ -464,7 +529,10 @@ func (m Model) View() string {
 // renderRightPanel renders the messages panel (with optional input area).
 func (m Model) renderRightPanel(w, h int) string {
 	if !m.app.InputMode {
-		title := "Messages (i to compose, PgUp(K)/PgDn(J) to scroll)"
+		title := "Messages (i:compose, m:select, K/J:scroll)"
+		if m.app.MessageSelectionMode {
+			title = "MESSAGE MODE (j/k:nav, r:react, ESC/m:exit)"
+		}
 		msgContent := m.renderMessages(w, h-1)
 		return normalBorder.Width(w).Height(h).
 			BorderStyle(lipgloss.RoundedBorder()).
@@ -665,8 +733,17 @@ func (m Model) renderMessages(w, h int) string {
 		}
 
 		padStr := strings.Repeat(" ", padding)
+		isSelected := m.app.MessageSelectionMode && (start+i == m.app.MessageSelectedIndex)
 		for _, line := range msgLines {
-			lines = append(lines, padStr+line)
+			content := padStr + line
+			if isSelected {
+				content = lipgloss.NewStyle().
+					Background(colDarkGray).
+					Foreground(colYellow).
+					Width(w).
+					Render(content)
+			}
+			lines = append(lines, content)
 		}
 	}
 
@@ -705,6 +782,13 @@ func (m Model) renderMessages(w, h int) string {
 // ---------------------------------------------------------------------------
 
 func (m Model) renderStatusBar(w int) string {
+	if m.app.ReactionMode {
+		return normalBorder.Width(w - 2).Height(1).Render(
+			lipgloss.NewStyle().Foreground(colYellow).Render(
+				"REACT: 1:👍 2:❤️ 3:😂 4:😮 5:😢 6:😡 (ESC:cancel)",
+			),
+		)
+	}
 	text := fmt.Sprintf("%s | Notification (n): %s", m.app.Status, m.app.NotificationMode)
 	if m.app.VisualBellActive() {
 		return bellBorder.Width(w - 2).Height(1).Render(text)

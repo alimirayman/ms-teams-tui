@@ -79,6 +79,18 @@ func sendMessageCmd(clientID, chatID, content string) tea.Cmd {
 	}
 }
 
+// setReactionCmd adds a reaction to a message in the background.
+func setReactionCmd(clientID, chatID, messageID, reactionType string) tea.Cmd {
+	return func() tea.Msg {
+		token, err := GetValidTokenSilent(clientID)
+		if err != nil {
+			return MsgSendDone{Err: err} // reuse MsgSendDone or create new
+		}
+		err = SetReaction(token, chatID, messageID, reactionType)
+		return MsgSendDone{Err: err}
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Desktop notification
 // ---------------------------------------------------------------------------
