@@ -74,8 +74,9 @@ type MessageFrom struct {
 	User *MessageUser `json:"user,omitempty"`
 }
 
-// MessageUser holds the sender display name.
+// MessageUser holds the sender display name and ID.
 type MessageUser struct {
+	ID          *string `json:"id,omitempty"`
 	DisplayName *string `json:"displayName,omitempty"`
 }
 
@@ -314,6 +315,14 @@ func SetReaction(accessToken, chatID, messageID, reactionType string) error {
 		"reactionType": reactionType,
 	}
 	return graphPost(accessToken, "/chats/"+chatID+"/messages/"+messageID+"/setReaction", payload)
+}
+
+// UnsetReaction removes a reaction from a message.
+func UnsetReaction(accessToken, chatID, messageID, reactionType string) error {
+	payload := map[string]any{
+		"reactionType": reactionType,
+	}
+	return graphPost(accessToken, "/chats/"+chatID+"/messages/"+messageID+"/unsetReaction", payload)
 }
 
 // ---------------------------------------------------------------------------

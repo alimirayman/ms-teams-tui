@@ -91,6 +91,18 @@ func setReactionCmd(clientID, chatID, messageID, reactionType string) tea.Cmd {
 	}
 }
 
+// unsetReactionCmd removes a reaction from a message in the background.
+func unsetReactionCmd(clientID, chatID, messageID, reactionType string) tea.Cmd {
+	return func() tea.Msg {
+		token, err := GetValidTokenSilent(clientID)
+		if err != nil {
+			return MsgSendDone{Err: err}
+		}
+		err = UnsetReaction(token, chatID, messageID, reactionType)
+		return MsgSendDone{Err: err}
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Desktop notification
 // ---------------------------------------------------------------------------

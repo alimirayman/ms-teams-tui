@@ -488,10 +488,38 @@ func (m Model) handleReactionModeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 			reactionType := types[idx]
 			chat := m.app.GetSelectedChat()
 			if chat != nil && m.app.MessageSelectedIndex < len(m.app.Messages) {
-				msgID := m.app.Messages[m.app.MessageSelectedIndex].ID
+				msgObj := m.app.Messages[m.app.MessageSelectedIndex]
+
+				// Check if current user already has this reaction.
+				hasReaction := false
+				if m.app.CurrentUserName != nil {
+					for _, r := range msgObj.Reactions {
+						rType := strings.ToLower(r.ReactionType)
+						targetType := strings.ToLower(reactionType)
+						// Match either keyword or emoji directly.
+						match := rType == targetType ||
+							(rType == "like" && targetType == "👍") ||
+							(rType == "heart" && targetType == "❤️") ||
+							(rType == "laugh" && targetType == "😂") ||
+							(rType == "surprised" && targetType == "😮") ||
+							(rType == "sad" && targetType == "😢") ||
+							(rType == "angry" && targetType == "😡")
+
+						if match && r.User != nil && r.User.User != nil &&
+							r.User.User.ID != nil &&
+							*r.User.User.ID == m.app.CurrentUserID {
+							hasReaction = true
+							break
+						}
+					}
+				}
+
 				m.app.ReactionMode = false
 				m.app.MessageSelectionMode = false
-				return m, setReactionCmd(m.clientID, chat.ID, msgID, reactionType)
+				if hasReaction {
+					return m, unsetReactionCmd(m.clientID, chat.ID, msgObj.ID, reactionType)
+				}
+				return m, setReactionCmd(m.clientID, chat.ID, msgObj.ID, reactionType)
 			}
 		}
 	}
@@ -666,6 +694,8 @@ func (m Model) renderMessages(w, h int) string {
 	var prevSender string
 	var prevTime time.Time
 
+	var selectedStartLine, selectedEndLine int = -1, -1
+
 	// Iterate in reverse (slice is newest-first) → append → shows newest at bottom.
 	for i := len(msgs) - 1; i >= 0; i-- {
 		msg := msgs[i]
@@ -734,6 +764,9 @@ func (m Model) renderMessages(w, h int) string {
 
 		padStr := strings.Repeat(" ", padding)
 		isSelected := m.app.MessageSelectionMode && (start+i == m.app.MessageSelectedIndex)
+		if isSelected {
+			selectedStartLine = len(lines)
+		}
 		for _, line := range msgLines {
 			content := padStr + line
 			if isSelected {
@@ -744,6 +777,9 @@ func (m Model) renderMessages(w, h int) string {
 					Render(content)
 			}
 			lines = append(lines, content)
+		}
+		if isSelected {
+			selectedEndLine = len(lines)
 		}
 	}
 
@@ -757,6 +793,18 @@ func (m Model) renderMessages(w, h int) string {
 	if m.app.SnapToBottom {
 		m.app.ScrollOffset = m.app.MaxScroll
 	}
+
+	// Auto-scroll to keep selection visible.
+	if m.app.MessageSelectionMode && selectedStartLine != -1 {
+		if selectedStartLine < m.app.ScrollOffset {
+			m.app.ScrollOffset = selectedStartLine
+			m.app.SnapToBottom = false
+		} else if selectedEndLine > m.app.ScrollOffset+h {
+			m.app.ScrollOffset = selectedEndLine - h
+			m.app.SnapToBottom = false
+		}
+	}
+
 	if m.app.ScrollOffset < 0 {
 		m.app.ScrollOffset = 0
 	}

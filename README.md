@@ -14,6 +14,7 @@ Authenticates via **OAuth2 Device Code Flow** (no browser redirect needed), fetc
 - ✏️ Send messages, including multiline via Alt+Enter
 - 🔔 Notification modes: None / Console (BEL + visual bell) / System (desktop) / Both
 - 🔄 Background polling — chats and messages refresh automatically every ~3 s
+- ❤️ Message Interactions — view and add reactions (Heart, Like, Laugh, etc.) to any message
 - 🔵 Unread Indicators — chats with new messages are marked with a dot (●) and bold text
 - ⬆️ New messages bubble chats to the top of the list
 - 📌 Stable chat ordering — order only changes when new messages arrive
@@ -118,6 +119,9 @@ On first run (or after token expiry) you will be prompted to visit a URL and ent
 | `Alt+Enter` | New line in message |
 | `Esc` | Cancel compose |
 | `n` | Toggle notification mode |
+| `m` | Enter/Exit **Message Mode** (to select/react) |
+| `r` | React to selected message (in Message Mode) |
+| `1-6` | Send reaction (in Reaction Mode) |
 | `q` | Quit |
 
 ---
