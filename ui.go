@@ -362,8 +362,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Update textarea if in input mode.
 	if m.app.InputMode && wasInputMode {
 		var cmd tea.Cmd
+		oldVal := m.textarea.Value()
 		m.textarea, cmd = m.textarea.Update(msg)
 		cmds = append(cmds, cmd)
+
+		newVal := m.textarea.Value()
+		if oldVal != newVal {
+			replaced := replaceEmoticons(newVal)
+			if replaced != newVal {
+				// In bubbles/textarea v1.0.0, we can get the current column offset.
+				// SetValue resets the cursor to the start, so we attempt to restore it.
+				// For multi-line messages, we fallback to moving the cursor to the end
+				// to avoid jumping to the wrong line.
+				col := m.textarea.LineInfo().ColumnOffset
+				diff := len([]rune(newVal)) - len([]rune(replaced))
+				m.textarea.SetValue(replaced)
+				if m.textarea.LineCount() <= 1 {
+					m.textarea.SetCursor(col - diff)
+				} else {
+					m.textarea.CursorEnd()
+				}
+			}
+		}
 		m.app.InputBuffer = m.textarea.Value()
 	}
 
@@ -595,7 +615,7 @@ func (m Model) handleMessageSelectionModeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 			quoted.WriteString("\n")
 			
 			m.textarea.SetValue(quoted.String())
-			m.textarea.SetCursor(len(m.textarea.Value()))
+			m.textarea.CursorEnd()
 			return m, m.textarea.Focus()
 		}
 		return m, nil
