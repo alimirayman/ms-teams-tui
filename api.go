@@ -358,8 +358,34 @@ func GetMessagesFromLink(accessToken, nextLink string) ([]Message, string, error
 // SendMessage
 // ---------------------------------------------------------------------------
 
+// replaceEmoticons replaces popular text emoticons with their Unicode equivalents.
+func replaceEmoticons(s string) string {
+	// Order matters: replace longer versions first to avoid partial matches.
+	replacements := []struct{ from, to string }{
+		{":-D", "😀"},
+		{":D", "😀"},
+		{":-)", "🙂"},
+		{":)", "🙂"},
+		{";-)", "😉"},
+		{";)", "😉"},
+		{":-(", "🙁"},
+		{":(", "🙁"},
+		{":-P", "😛"},
+		{":P", "😛"},
+		{"<3", "❤️"},
+		{"(y)", "👍"},
+		{"(n)", "👎"},
+	}
+
+	for _, r := range replacements {
+		s = strings.ReplaceAll(s, r.from, r.to)
+	}
+	return s
+}
+
 // formatMessageBody prepares the payload body for sending or updating a message.
 func formatMessageBody(content string) map[string]any {
+	content = replaceEmoticons(content)
 	// If it's a single line with no indentation, plain text is fine.
 	if !strings.Contains(content, "\n") && !strings.HasPrefix(content, " ") && !strings.HasPrefix(content, "\t") {
 		return map[string]any{

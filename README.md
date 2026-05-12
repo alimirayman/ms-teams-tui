@@ -15,6 +15,7 @@ Authenticates via **OAuth2 Device Code Flow** (no browser redirect needed), fetc
 - ✏️ Message Management — send, edit, and delete messages (includes multi-line support)
 - 🔔 Notification modes: None / Console (BEL + visual bell) / System (desktop) / Both
 - 🔄 Background polling — chats and messages refresh automatically every ~3 s
+- 😊 Emoticon Auto-replacement — popular text emoticons (like `:)`, `:D`, `<3`) are automatically converted to Unicode emojis
 
 - 🔵 Unread Indicators — chats with new messages are marked with a dot (●) and bold text
 - ⬆️ New messages bubble chats to the top of the list
