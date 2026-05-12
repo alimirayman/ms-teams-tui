@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -663,6 +665,22 @@ func abbreviateName(name string) string {
 // HTML-to-text rendering
 // ---------------------------------------------------------------------------
 
+func decodeSafeLink(u string) string {
+	parsed, err := url.Parse(u)
+	if err != nil {
+		return u
+	}
+	if strings.Contains(parsed.Host, "safelinks.protection.outlook.com") {
+		realURL := parsed.Query().Get("url")
+		if realURL != "" {
+			return realURL
+		}
+	}
+	return u
+}
+
+var urlRegex = regexp.MustCompile(`https?://[^\s<>"]+`)
+
 // HTMLToText converts a Teams message HTML body to plain text suitable for
 // terminal display. It returns the rendered text and a lipgloss-compatible
 // styled string (where special elements are coloured).
@@ -682,6 +700,9 @@ func HTMLToText(htmlContent string, attachments []MessageAttachment) string {
 	var lastChar rune
 	var tagAddedNewline bool
 	var inPre bool
+	var inLink bool
+	var currentLinkURL string
+	var linkText strings.Builder
 
 	for {
 		tt := tokenizer.Next()
@@ -700,7 +721,11 @@ func HTMLToText(htmlContent string, attachments []MessageAttachment) string {
 			switch tag {
 			case "img":
 				orangeText := lipgloss.NewStyle().Foreground(lipgloss.Color("#FF8700")).Render("image")
-				sb.WriteString("🖼️  " + orangeText)
+				content := "🖼️  " + orangeText
+				if inLink {
+					content = fmt.Sprintf("\x1b]8;;%s\x1b\\%s\x1b]8;;\x1b\\", currentLinkURL, content)
+				}
+				sb.WriteString(content)
 				lastChar = 'e'
 
 			case "attachment":
@@ -744,6 +769,16 @@ func HTMLToText(htmlContent string, attachments []MessageAttachment) string {
 			// Block-level elements that should be silently removed (start tag only).
 			case "p", "div", "li", "pre":
 				// Do nothing — closing tag will emit newline.
+
+			case "a":
+				for _, a := range token.Attr {
+					if a.Key == "href" {
+						currentLinkURL = decodeSafeLink(a.Val)
+						inLink = true
+						linkText.Reset()
+						break
+					}
+				}
 			}
 
 		case html.EndTagToken:
@@ -764,6 +799,18 @@ func HTMLToText(htmlContent string, attachments []MessageAttachment) string {
 					lastChar = '\n'
 				}
 				tagAddedNewline = true
+			case "a":
+				if inLink {
+					// Diagnosis: if the visible text doesn't look like the URL, append it.
+					lt := strings.TrimSpace(linkText.String())
+					if lt != "" && lt != currentLinkURL && !strings.Contains(currentLinkURL, lt) {
+						diag := lipgloss.NewStyle().Foreground(lipgloss.Color("#888888")).Render(" (" + currentLinkURL + ")")
+						sb.WriteString(diag)
+					}
+					inLink = false
+					currentLinkURL = ""
+					linkText.Reset()
+				}
 			}
 
 		case html.TextToken:
@@ -784,6 +831,25 @@ func HTMLToText(htmlContent string, attachments []MessageAttachment) string {
 				if !inPre && lastChar == '\n' && strings.TrimSpace(text) == "" && !strings.Contains(text, "\u00A0") {
 					continue
 				}
+
+				if inLink && currentLinkURL != "" {
+					linkText.WriteString(text)
+					styled := lipgloss.NewStyle().
+						Foreground(lipgloss.Color("#00AFFF")).
+						Underline(true).
+						Render(text)
+					text = fmt.Sprintf("\x1b]8;;%s\x1b\\%s\x1b]8;;\x1b\\", currentLinkURL, styled)
+				} else {
+					// Not in a tag, but might contain plain text URLs.
+					text = urlRegex.ReplaceAllStringFunc(text, func(u string) string {
+						styled := lipgloss.NewStyle().
+							Foreground(lipgloss.Color("#00AFFF")).
+							Underline(true).
+							Render(u)
+						return fmt.Sprintf("\x1b]8;;%s\x1b\\%s\x1b]8;;\x1b\\", u, styled)
+					})
+				}
+
 				sb.WriteString(text)
 				r, _ := utf8.DecodeLastRuneInString(text)
 				lastChar = r

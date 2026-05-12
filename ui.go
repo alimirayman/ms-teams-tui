@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"regexp"
 	"github.com/atotto/clipboard"
 )
 
@@ -517,7 +518,7 @@ func (m Model) handleMessageSelectionModeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		if m.app.MessageSelectedIndex < len(m.app.Messages) {
 			msgObj := m.app.Messages[m.app.MessageSelectedIndex]
 			if msgObj.Body != nil && msgObj.Body.Content != nil {
-				text := HTMLToText(*msgObj.Body.Content, msgObj.Attachments)
+				text := stripANSI(HTMLToText(*msgObj.Body.Content, msgObj.Attachments))
 				if err := clipboard.WriteAll(text); err == nil {
 					m.app.SetStatus("Message copied to clipboard", 3*time.Second)
 				} else {
@@ -548,7 +549,7 @@ func (m Model) handleMessageSelectionModeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 				m.app.InputMode = true
 				content := ""
 				if msgObj.Body != nil && msgObj.Body.Content != nil {
-					content = HTMLToText(*msgObj.Body.Content, msgObj.Attachments)
+					content = stripANSI(HTMLToText(*msgObj.Body.Content, msgObj.Attachments))
 				}
 				m.textarea.SetValue(content)
 				return m, m.textarea.Focus()
@@ -574,7 +575,7 @@ func (m Model) handleMessageSelectionModeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 			
 			content := ""
 			if msgObj.Body != nil && msgObj.Body.Content != nil {
-				content = HTMLToText(*msgObj.Body.Content, msgObj.Attachments)
+				content = stripANSI(HTMLToText(*msgObj.Body.Content, msgObj.Attachments))
 			}
 			
 			var quoted strings.Builder
@@ -1057,60 +1058,19 @@ func padLeft(s string, w int) string {
 	return strings.Repeat(" ", pad) + s
 }
 
-// wordWrap breaks s into lines of at most maxW runes, preserving whitespace.
 func wordWrap(s string, maxW int) []string {
 	if maxW <= 0 {
 		return []string{s}
 	}
-	var out []string
-	for _, line := range strings.Split(s, "\n") {
-		if line == "" {
-			out = append(out, "")
-			continue
-		}
-
-		// While the line is too long, find a place to break.
-		for lipgloss.Width(line) > maxW {
-			breakIdx := -1
-			currW := 0
-			runes := []rune(line)
-			for i, r := range runes {
-				rw := lipgloss.Width(string(r))
-				if currW+rw > maxW {
-					break
-				}
-				if r == ' ' || r == '\t' {
-					breakIdx = i
-				}
-				currW += rw
-			}
-
-			if breakIdx == -1 {
-				// No space found, force break at maxW.
-				fitCount := 0
-				fitW := 0
-				for _, r := range runes {
-					rw := lipgloss.Width(string(r))
-					if fitW+rw > maxW {
-						break
-					}
-					fitW += rw
-					fitCount++
-				}
-				if fitCount == 0 && len(runes) > 0 {
-					fitCount = 1
-				}
-				out = append(out, string(runes[:fitCount]))
-				line = string(runes[fitCount:])
-			} else {
-				// Break at space.
-				out = append(out, string(runes[:breakIdx]))
-				line = string(runes[breakIdx+1:])
-			}
-		}
-		out = append(out, line)
+	// Use lipgloss to perform ANSI-aware wrapping. lipgloss (via reflow)
+	// correctly handles repeating escape sequences (like OSC 8 links) across
+	// line breaks.
+	res := lipgloss.NewStyle().Width(maxW).Render(s)
+	lines := strings.Split(res, "\n")
+	for i := range lines {
+		lines[i] = strings.TrimRight(lines[i], " ")
 	}
-	return out
+	return lines
 }
 
 // updateScroll recalculates scroll bounds after messages change.
@@ -1363,12 +1323,19 @@ func (m Model) rebuildChatList() Model {
 // Notifications
 // ---------------------------------------------------------------------------
 
+// stripANSI removes ANSI escape codes (including OSC 8 links) from a string.
+func stripANSI(s string) string {
+	// Standard ANSI CSI sequences + OSC 8 sequences.
+	re := regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]|\x1b\]8;.*?\x1b\\`)
+	return re.ReplaceAllString(s, "")
+}
+
 // notify triggers the appropriate notification based on the app's mode.
 func (m *Model) notify(senderName string, msg Message) {
 	body := ""
 	if m.app.NotificationShowPreview {
 		if msg.Body != nil && msg.Body.Content != nil {
-			body = HTMLToText(*msg.Body.Content, msg.Attachments)
+			body = stripANSI(HTMLToText(*msg.Body.Content, msg.Attachments))
 			// Remove newlines and collapse spaces for a cleaner notification body.
 			body = strings.ReplaceAll(body, "\n", " ")
 			body = strings.Join(strings.Fields(body), " ")
