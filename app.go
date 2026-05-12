@@ -92,6 +92,9 @@ type App struct {
 	NextLink        string
 	PendingScrollID string
 	EditingMessageID *string
+	UrlSelectionMode     bool
+	UrlSelectedIndex     int
+	UrlsInMessage        []string
 }
 
 // NewApp creates an App with sensible initial defaults.

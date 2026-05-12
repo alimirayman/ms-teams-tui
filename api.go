@@ -679,6 +679,49 @@ func decodeSafeLink(u string) string {
 	return u
 }
 
+// ExtractURLs extracts all unique URLs from a Teams message HTML body.
+func ExtractURLs(htmlContent string) []string {
+	tokenizer := html.NewTokenizer(strings.NewReader(htmlContent))
+	var urls []string
+	urlMap := make(map[string]bool)
+
+	addURL := func(u string) {
+		u = decodeSafeLink(u)
+		if u == "" {
+			return
+		}
+		if !urlMap[u] {
+			urls = append(urls, u)
+			urlMap[u] = true
+		}
+	}
+
+	for {
+		tt := tokenizer.Next()
+		if tt == html.ErrorToken {
+			break
+		}
+		token := tokenizer.Token()
+		switch tt {
+		case html.StartTagToken, html.SelfClosingTagToken:
+			if token.Data == "a" {
+				for _, a := range token.Attr {
+					if a.Key == "href" {
+						addURL(a.Val)
+					}
+				}
+			}
+		case html.TextToken:
+			text := html.UnescapeString(token.Data)
+			matches := urlRegex.FindAllString(text, -1)
+			for _, m := range matches {
+				addURL(m)
+			}
+		}
+	}
+	return urls
+}
+
 var urlRegex = regexp.MustCompile(`https?://[^\s<>"]+`)
 
 // HTMLToText converts a Teams message HTML body to plain text suitable for

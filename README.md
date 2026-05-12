@@ -12,6 +12,7 @@ Authenticates via **OAuth2 Device Code Flow** (no browser redirect needed), fetc
 - 💬 List all your Teams chats (1:1, group, meetings) with computed display names
 - 📨 View messages in any chat with HTML-to-text rendering (images, attachments, emoji)
 - ❤️ Message Interactions — view and add reactions (Heart, Like, Laugh, etc.) to any message
+- 🔗 Clickable & Extractable URLs — links are clickable in supported terminals and can be extracted/copied via the `u` key
 - ✏️ Message Management — send, edit, and delete messages (includes multi-line support)
 - 🔔 Notification modes: None / Console (BEL + visual bell) / System (desktop) / Both
 - 🔄 Background polling — chats and messages refresh automatically every ~3 s
@@ -134,6 +135,7 @@ On first run (or after token expiry) you will be prompted to visit a URL and ent
 | `m`          | Enter/Exit **Message Mode** (to select/react/delete/copy) |
 | `r`          | React to selected message (in Message Mode)          |
 | `y`          | Copy (yank) message text (in Message Mode)           |
+| `u`          | Copy (yank) URL from message (in Message Mode)        |
 | `d`          | Delete selected message (in Message Mode)            |
 | `e`          | Edit selected message (in Message Mode)              |
 | `a`          | Answer (reply) to selected message (in Message Mode) |

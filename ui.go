@@ -385,6 +385,9 @@ func (m Model) handleNormalModeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	if m.app.ReactionMode {
 		return m.handleReactionModeKey(msg)
 	}
+	if m.app.UrlSelectionMode {
+		return m.handleUrlSelectionModeKey(msg)
+	}
 	if m.app.MessageSelectionMode {
 		return m.handleMessageSelectionModeKey(msg)
 	}
@@ -596,8 +599,27 @@ func (m Model) handleMessageSelectionModeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 			return m, m.textarea.Focus()
 		}
 		return m, nil
+	case "u":
+		if m.app.MessageSelectedIndex < len(m.app.Messages) {
+			msgObj := m.app.Messages[m.app.MessageSelectedIndex]
+			if msgObj.Body != nil && msgObj.Body.Content != nil {
+				urls := ExtractURLs(*msgObj.Body.Content)
+				if len(urls) == 0 {
+					m.app.SetStatus("No URLs found in message", 3*time.Second)
+				} else if len(urls) == 1 {
+					if err := clipboard.WriteAll(urls[0]); err == nil {
+						m.app.SetStatus("URL copied to clipboard", 3*time.Second)
+					}
+					m.app.MessageSelectionMode = false
+				} else {
+					m.app.UrlSelectionMode = true
+					m.app.UrlSelectedIndex = 0
+					m.app.UrlsInMessage = urls
+				}
+			}
+		}
+		return m, nil
 	}
-
 
 	return m, nil
 }
@@ -669,8 +691,62 @@ func (m Model) handleDeleteConfirmModeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m Model) updateUrlSelection(msg tea.KeyMsg) (Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "q":
+		m.app.UrlSelectionMode = false
+		return m, nil
+
+	case "j", "down":
+		if m.app.UrlSelectedIndex < len(m.app.UrlsInMessage)-1 {
+			m.app.UrlSelectedIndex++
+		}
+
+	case "k", "up":
+		if m.app.UrlSelectedIndex > 0 {
+			m.app.UrlSelectedIndex--
+		}
+
+	case "enter", "y":
+		url := m.app.UrlsInMessage[m.app.UrlSelectedIndex]
+		if err := clipboard.WriteAll(url); err == nil {
+			m.app.SetStatus("URL copied to clipboard", 3*time.Second)
+		}
+		m.app.UrlSelectionMode = false
+		m.app.MessageSelectionMode = false
+	}
+	return m, nil
+}
+
+func (m Model) handleUrlSelectionModeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "q":
+		m.app.UrlSelectionMode = false
+		return m, nil
+
+	case "j", "down":
+		if m.app.UrlSelectedIndex < len(m.app.UrlsInMessage)-1 {
+			m.app.UrlSelectedIndex++
+		}
+
+	case "k", "up":
+		if m.app.UrlSelectedIndex > 0 {
+			m.app.UrlSelectedIndex--
+		}
+
+	case "enter", "y":
+		url := m.app.UrlsInMessage[m.app.UrlSelectedIndex]
+		if err := clipboard.WriteAll(url); err == nil {
+			m.app.SetStatus("URL copied to clipboard", 3*time.Second)
+		}
+		m.app.UrlSelectionMode = false
+		m.app.MessageSelectionMode = false
+	}
+	return m, nil
+}
+
 // ---------------------------------------------------------------------------
-// View
+// Main View
 // ---------------------------------------------------------------------------
 
 // View renders the complete TUI.
@@ -694,7 +770,14 @@ func (m Model) View() string {
 	left := normalBorder.Width(chatW - 2).Height(innerH).Render(chatPanel)
 
 	top := lipgloss.JoinHorizontal(lipgloss.Top, left, right)
-	return lipgloss.JoinVertical(lipgloss.Left, top, m.renderStatusBar(m.width))
+	mainView := lipgloss.JoinVertical(lipgloss.Left, top, m.renderStatusBar(m.width))
+
+	if m.app.UrlSelectionMode {
+		modal := m.renderUrlSelection(m.width, m.height)
+		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, modal)
+	}
+
+	return mainView
 }
 
 // renderRightPanel renders the messages panel (with optional input area).
@@ -702,7 +785,7 @@ func (m Model) renderRightPanel(w, h int) string {
 	if !m.app.InputMode {
 		title := "Messages (i:compose, m:select, K/J:scroll)"
 		if m.app.MessageSelectionMode {
-			title = "MESSAGE MODE (j/k:nav, r:react, y:yank, d:delete, e:edit, a:answer, ESC/m:exit)"
+			title = "MESSAGE MODE (j/k:nav, r:react, y:yank, u:url, d:delete, e:edit, a:answer, ESC/m:exit)"
 		}
 		msgContent := m.renderMessages(w, h-1)
 		return normalBorder.Width(w).Height(h).
@@ -1317,6 +1400,39 @@ func (m Model) rebuildChatList() Model {
 	}
 	m.app.Chats = ordered
 	return m
+}
+
+func (m Model) renderUrlSelection(w, h int) string {
+	if len(m.app.UrlsInMessage) == 0 {
+		return ""
+	}
+
+	title := lipgloss.NewStyle().Foreground(colYellow).Bold(true).Render("Select URL to yank (Enter/y to copy, Esc/q to cancel):")
+	var list strings.Builder
+	list.WriteString(title + "\n\n")
+
+	for i, u := range m.app.UrlsInMessage {
+		prefix := "  "
+		style := lipgloss.NewStyle()
+		if i == m.app.UrlSelectedIndex {
+			prefix = "> "
+			style = style.Foreground(colYellow).Background(colDarkGray)
+		}
+		
+		displayURL := u
+		if len(displayURL) > w-10 {
+			displayURL = displayURL[:w-13] + "..."
+		}
+		list.WriteString(style.Render(prefix+displayURL) + "\n")
+	}
+
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(colYellow).
+		Padding(1, 2).
+		Render(list.String())
+
+	return box
 }
 
 // ---------------------------------------------------------------------------
