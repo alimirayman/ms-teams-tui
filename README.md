@@ -135,6 +135,7 @@ On first run (or after token expiry) you will be prompted to visit a URL and ent
 | `y`          | Copy (yank) message text (in Message Mode)           |
 | `d`          | Delete selected message (in Message Mode)            |
 | `e`          | Edit selected message (in Message Mode)              |
+| `a`          | Answer (reply) to selected message (in Message Mode) |
 | `1-6`        | Send reaction (in Reaction Mode)                     |
 | `q`          | Quit                                                 |
 

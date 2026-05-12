@@ -557,7 +557,46 @@ func (m Model) handleMessageSelectionModeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 			}
 		}
 		return m, nil
+
+	case "a":
+		if m.app.MessageSelectedIndex < len(m.app.Messages) {
+			msgObj := m.app.Messages[m.app.MessageSelectedIndex]
+			m.app.MessageSelectionMode = false
+			m.app.InputMode = true
+			
+			sender := "Unknown"
+			if msgObj.From != nil && msgObj.From.User != nil && msgObj.From.User.DisplayName != nil {
+				sender = *msgObj.From.User.DisplayName
+			}
+			if m.isOwn(msgObj) {
+				sender = "Me"
+			}
+			
+			content := ""
+			if msgObj.Body != nil && msgObj.Body.Content != nil {
+				content = HTMLToText(*msgObj.Body.Content, msgObj.Attachments)
+			}
+			
+			var quoted strings.Builder
+			lines := strings.Split(content, "\n")
+			quoted.WriteString("> " + sender + ": ")
+			if len(lines) > 0 {
+				quoted.WriteString(lines[0] + "\n")
+				for _, l := range lines[1:] {
+					quoted.WriteString("> " + l + "\n")
+				}
+			} else {
+				quoted.WriteString("\n")
+			}
+			quoted.WriteString("\n")
+			
+			m.textarea.SetValue(quoted.String())
+			m.textarea.SetCursor(len(m.textarea.Value()))
+			return m, m.textarea.Focus()
+		}
+		return m, nil
 	}
+
 
 	return m, nil
 }
@@ -662,7 +701,7 @@ func (m Model) renderRightPanel(w, h int) string {
 	if !m.app.InputMode {
 		title := "Messages (i:compose, m:select, K/J:scroll)"
 		if m.app.MessageSelectionMode {
-			title = "MESSAGE MODE (j/k:nav, r:react, y:yank, d:delete, e:edit, ESC/m:exit)"
+			title = "MESSAGE MODE (j/k:nav, r:react, y:yank, d:delete, e:edit, a:answer, ESC/m:exit)"
 		}
 		msgContent := m.renderMessages(w, h-1)
 		return normalBorder.Width(w).Height(h).
