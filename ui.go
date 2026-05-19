@@ -7,6 +7,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/charmbracelet/bubbles/textarea"
+	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"regexp"
@@ -63,6 +64,7 @@ type MsgMoreMessagesLoaded struct {
 	ChatIndex int
 	Messages  []Message
 	NextLink  string
+	IsSearch  bool
 }
 
 // MsgNewMessage signals that a new message arrived in a non-selected chat.
@@ -95,6 +97,9 @@ type Model struct {
 	// Textarea for composing messages.
 	textarea textarea.Model
 
+	// Textinput for searching.
+	searchInput textinput.Model
+
 	// Stable ordering of chat IDs.
 	stableChatOrder []string
 
@@ -126,11 +131,17 @@ func NewModel(app *App, clientID, userID string) Model {
 	ta.ShowLineNumbers = false
 	ta.CharLimit = 0
 
+	ti := textinput.New()
+	ti.Placeholder = "Search history..."
+	ti.CharLimit = 100
+	ti.Width = 40
+
 	return Model{
 		app:           app,
 		clientID:      clientID,
 		userID:        userID,
 		textarea:      ta,
+		searchInput:   ti,
 		lastMsgID:     make(map[string]string),
 		lastMsgTime:   make(map[string]time.Time),
 		lastReadMsgID: make(map[string]string),
@@ -163,6 +174,7 @@ func (m Model) Init() tea.Cmd {
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 	wasInputMode := m.app.InputMode
+	wasSearchMode := m.app.SearchMode
 
 	switch msg := msg.(type) {
 
@@ -180,6 +192,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.app.StatusUntil != nil && time.Now().After(*m.app.StatusUntil) {
 			m.app.Status = ""
 			m.app.StatusUntil = nil
+		}
+		if m.app.SearchStatusUntil != nil && time.Now().After(*m.app.SearchStatusUntil) {
+			m.app.SearchStatus = ""
+			m.app.SearchStatusUntil = nil
 		}
 
 		// Periodic chat refresh every ~3 s.
@@ -248,6 +264,29 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			isNewMessage := len(prev) == 0 || (len(msg.Messages) > 0 && prev[0].ID != msg.Messages[0].ID)
 			m.app.SetMessages(msg.Messages, msg.NextLink)
 			
+			// Keep history cache in sync with new incoming messages
+			chat := m.app.GetSelectedChat()
+			if chat != nil {
+				if hist, ok := m.app.HistoryMessages[chat.ID]; ok && len(hist) > 0 {
+					var toPrepend []Message
+					for _, newMsg := range msg.Messages {
+						found := false
+						for _, oldMsg := range hist {
+							if oldMsg.ID == newMsg.ID {
+								found = true
+								break
+							}
+						}
+						if !found {
+							toPrepend = append(toPrepend, newMsg)
+						}
+					}
+					if len(toPrepend) > 0 {
+						m.app.HistoryMessages[chat.ID] = append(toPrepend, hist...)
+					}
+				}
+			}
+
 			// Only snap to bottom if a new message arrived and the user isn't 
 			// currently busy selecting/reacting to an older message.
 			if isNewMessage && !m.app.MessageSelectionMode {
@@ -280,12 +319,52 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.ChatIndex != m.app.SelectedIndex {
 			break
 		}
-		// Record the oldest message ID to maintain scroll context.
-		if len(m.app.Messages) > 0 {
-			m.app.PendingScrollID = m.app.Messages[len(m.app.Messages)-1].ID
+		
+		chat := m.app.GetSelectedChat()
+		if chat != nil && msg.IsSearch {
+			m.app.SetSearchLoadingMessages(false)
+
+			// Update history messages cache directly
+			hist := m.app.HistoryMessages[chat.ID]
+			existingIDs := make(map[string]bool)
+			for _, mObj := range hist {
+				existingIDs[mObj.ID] = true
+			}
+			for _, newM := range msg.Messages {
+				if !existingIDs[newM.ID] {
+					hist = append(hist, newM)
+				}
+			}
+			m.app.HistoryMessages[chat.ID] = hist
+			m.app.HistoryNextLink[chat.ID] = msg.NextLink
+
+			// Rebuild search popup results dynamically if search popup is still open
+			if m.app.SearchPopupMode {
+				m.RebuildSearchPopupResults()
+				m.saveSearchState()
+
+				if msg.NextLink != "" {
+					m.app.SetSearchLoadingMessages(true)
+					m.app.SetSearchStatus(fmt.Sprintf("Searching all history for '%s'... Loaded %d messages", m.app.SearchQuery, len(hist)), 0)
+					cmds = append(cmds, loadMoreMessagesCmd(m.clientID, msg.NextLink, m.app.SelectedIndex, true))
+				} else {
+					m.app.SetSearchStatus(fmt.Sprintf("Search finished. Loaded all %d messages in history.", len(hist)), 5*time.Second)
+				}
+			} else {
+				// Silently continue loading next page in background so history is ready
+				if msg.NextLink != "" {
+					m.app.SetSearchLoadingMessages(true)
+					cmds = append(cmds, loadMoreMessagesCmd(m.clientID, msg.NextLink, m.app.SelectedIndex, true))
+				}
+			}
+		} else {
+			// Standard main chat scroll pagination
+			if len(m.app.Messages) > 0 {
+				m.app.PendingScrollID = m.app.Messages[len(m.app.Messages)-1].ID
+			}
+			m.app.AppendOlderMessages(msg.Messages, msg.NextLink)
+			m.updateScroll()
 		}
-		m.app.AppendOlderMessages(msg.Messages, msg.NextLink)
-		m.updateScroll()
 
 	// ── Focus / Blur ─────────────────────────────────────────────────────
 	case tea.FocusMsg:
@@ -387,6 +466,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.app.InputBuffer = m.textarea.Value()
 	}
 
+	// Update search input if in search mode.
+	if m.app.SearchMode && wasSearchMode {
+		var cmd tea.Cmd
+		m.searchInput, cmd = m.searchInput.Update(msg)
+		cmds = append(cmds, cmd)
+	}
+
 	return m, tea.Batch(cmds...)
 }
 
@@ -394,6 +480,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	if m.app.InputMode {
 		return m.handleInputModeKey(msg)
+	}
+	if m.app.SearchPopupMode {
+		if m.app.SearchMode {
+			return m.handleSearchModeKey(msg)
+		}
+		return m.handleSearchPopupNavigationKey(msg)
 	}
 	return m.handleNormalModeKey(msg)
 }
@@ -440,10 +532,47 @@ func (m Model) handleNormalModeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		m.textarea.Reset()
 		return m, m.textarea.Focus()
 
+	case "/":
+		m.app.MainChatScrollOffset = m.app.ScrollOffset
+		m.app.MainChatSnapToBottom = m.app.SnapToBottom
+		m.app.SearchPopupMode = true
+		m.app.SearchMode = true
+		chat := m.app.GetSelectedChat()
+		if chat != nil {
+			hist := m.app.HistoryMessages[chat.ID]
+			existingIDs := make(map[string]bool)
+			for _, mObj := range hist {
+				existingIDs[mObj.ID] = true
+			}
+			var toAdd []Message
+			for _, mainM := range m.app.Messages {
+				if !existingIDs[mainM.ID] {
+					toAdd = append(toAdd, mainM)
+				}
+			}
+			if len(toAdd) > 0 {
+				m.app.HistoryMessages[chat.ID] = append(toAdd, hist...)
+			}
+			if len(hist) == 0 {
+				m.app.HistoryNextLink[chat.ID] = m.app.NextLink
+			}
+		}
+		m.loadSearchState()
+		m.searchInput.SetValue(m.app.SearchQuery)
+		m.searchInput.Focus()
+		return m, textinput.Blink
+
+	case "esc":
+		if m.app.SearchActive {
+			m.app.SearchActive = false
+			m.app.SearchQuery = ""
+			m.app.SetStatus("Highlights cleared.", 3*time.Second)
+		}
+
 	case "K", "pgup":
 		if m.app.ScrollOffset == 0 && m.app.NextLink != "" && !m.app.LoadingMessages {
 			m.app.SetLoadingMessages(true)
-			return m, loadMoreMessagesCmd(m.clientID, m.app.NextLink, m.app.SelectedIndex)
+			return m, loadMoreMessagesCmd(m.clientID, m.app.NextLink, m.app.SelectedIndex, false)
 		}
 		m.app.ScrollOffset -= 10
 		if m.app.ScrollOffset < 0 {
@@ -480,6 +609,9 @@ func (m Model) handleNormalModeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	if m.app.SelectedIndex != prevIdx {
 		m.app.Messages = nil
 		m.app.NextLink = ""
+		m.app.SearchMode = false
+		m.app.SearchActive = false
+		m.app.SearchQuery = ""
 		m.app.SetLoadingMessages(true)
 		m.app.SnapToBottom = true
 		if chat := m.app.GetSelectedChat(); chat != nil {
@@ -525,6 +657,49 @@ func (m Model) handleInputModeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	}
 
 	// All other keys are forwarded to the textarea (handled in Update).
+	return m, nil
+}
+
+func (m Model) handleSearchModeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.app.SearchMode = false
+		m.searchInput.Blur()
+		return m, nil
+
+	case "enter":
+		query := strings.TrimSpace(m.searchInput.Value())
+		m.app.SearchMode = false
+		m.searchInput.Blur()
+		if query == "" {
+			m.app.SearchActive = false
+			m.app.SearchQuery = ""
+			m.app.SearchPopupResults = nil
+			m.app.SearchPopupSelectedIndex = 0
+			m.saveSearchState()
+			return m, nil
+		}
+		m.app.SearchActive = true
+		m.app.SearchQuery = query
+
+		chat := m.app.GetSelectedChat()
+		if chat != nil {
+			m.RebuildSearchPopupResults()
+
+			nextLink := m.app.HistoryNextLink[chat.ID]
+			if nextLink != "" {
+				m.app.SetSearchLoadingMessages(true)
+				m.app.SetSearchStatus(fmt.Sprintf("Searching all history for '%s'... Loaded %d messages", query, len(m.app.HistoryMessages[chat.ID])), 0)
+				m.saveSearchState()
+				return m, loadMoreMessagesCmd(m.clientID, nextLink, m.app.SelectedIndex, true)
+			}
+		}
+
+		m.app.SetSearchStatus("Search finished.", 3*time.Second)
+		m.saveSearchState()
+		return m, nil
+	}
+
 	return m, nil
 }
 
@@ -808,13 +983,26 @@ func (m Model) View() string {
 		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, modal)
 	}
 
+	if m.app.SearchPopupMode {
+		popupW := m.width * 85 / 100
+		popupH := m.height * 80 / 100
+		if popupW < 40 {
+			popupW = 40
+		}
+		if popupH < 10 {
+			popupH = 10
+		}
+		modal := m.renderSearchPopup(popupW, popupH)
+		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, modal)
+	}
+
 	return mainView
 }
 
 // renderRightPanel renders the messages panel (with optional input area).
 func (m Model) renderRightPanel(w, h int) string {
 	if !m.app.InputMode {
-		title := "Messages (i:compose, m:select, K/J:scroll)"
+		title := "Messages (i:compose, m:select, K/J:scroll, /:search)"
 		if m.app.MessageSelectionMode {
 			title = "MESSAGE MODE (j/k:nav, r:react, y:yank, u:url, d:delete, e:edit, a:answer, ESC/m:exit)"
 		}
@@ -986,10 +1174,18 @@ func (m Model) renderMessages(w, h int) string {
 			}
 			var header string
 			if m.isOwn(msg) {
-				h := lipgloss.NewStyle().Foreground(colGreen).Render(dateStr + " Me")
+				senderName := "Me"
+				if m.app.SearchActive && m.app.SearchQuery != "" {
+					senderName = highlightQuery(senderName, m.app.SearchQuery)
+				}
+				h := lipgloss.NewStyle().Foreground(colGreen).Render(dateStr + " " + senderName)
 				header = padLeft(h, w)
 			} else {
-				header = lipgloss.NewStyle().Foreground(colCyan).Render(sender + " " + dateStr)
+				senderName := sender
+				if m.app.SearchActive && m.app.SearchQuery != "" {
+					senderName = highlightQuery(senderName, m.app.SearchQuery)
+				}
+				header = lipgloss.NewStyle().Foreground(colCyan).Render(senderName + " " + dateStr)
 			}
 			lines = append(lines, header)
 		}
@@ -997,9 +1193,9 @@ func (m Model) renderMessages(w, h int) string {
 		prevTime = msgTime
 
 		// Render body.
-		body := ""
-		if msg.Body != nil && msg.Body.Content != nil {
-			body = HTMLToText(*msg.Body.Content, msg.Attachments)
+		body := msg.GetPlainText()
+		if m.app.SearchActive && m.app.SearchQuery != "" {
+			body = highlightQuery(body, m.app.SearchQuery)
 		}
 
 		// Add reactions.
@@ -1506,4 +1702,638 @@ func (m *Model) notify(senderName string, msg Message) {
 		m.app.TriggerVisualBell()
 		go sendDesktopNotification(senderName, body)
 	}
+}
+
+// messageMatches reports whether the given message contains the case-insensitive query in its body, sender name, or attachment names.
+func (m Model) messageMatches(msg *Message, query string) bool {
+	if query == "" {
+		return true
+	}
+	query = strings.TrimSpace(strings.ToLower(query))
+
+	// Check sender
+	if msg.From != nil && msg.From.User != nil && msg.From.User.DisplayName != nil {
+		if strings.Contains(strings.ToLower(*msg.From.User.DisplayName), query) {
+			return true
+		}
+	} else if strings.Contains("me", query) && m.isOwn(*msg) {
+		return true
+	}
+
+	// Check body
+	text := msg.GetPlainText()
+	if strings.Contains(strings.ToLower(text), query) {
+		return true
+	}
+
+	// Check attachments
+	for _, att := range msg.Attachments {
+		if att.Name != nil && strings.Contains(strings.ToLower(*att.Name), query) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// highlightQuery highlights occurrences of query inside text without breaking ANSI sequences.
+func highlightQuery(text, query string) string {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return text
+	}
+
+	lowerText := strings.ToLower(text)
+	lowerQuery := strings.ToLower(query)
+	if !strings.Contains(lowerText, lowerQuery) {
+		return text
+	}
+
+	type runeInfo struct {
+		isANSI  bool
+		val     rune
+		bytePos int
+	}
+
+	runes := []rune(text)
+	infos := make([]runeInfo, 0, len(runes))
+
+	bytePos := 0
+	inANSI := false
+
+	for i := 0; i < len(runes); i++ {
+		r := runes[i]
+		rLen := utf8.RuneLen(r)
+
+		if r == '\x1b' {
+			inANSI = true
+		}
+
+		infos = append(infos, runeInfo{
+			isANSI:  inANSI,
+			val:     r,
+			bytePos: bytePos,
+		})
+
+		if inANSI {
+			if r == 'm' && i > 0 && runes[i-1] != '\x1b' {
+				inANSI = false
+			}
+			if r == '\\' && i > 0 && runes[i-1] == '\x1b' {
+				inANSI = false
+			}
+		}
+
+		bytePos += rLen
+	}
+
+	var plainText strings.Builder
+	var plainToOriginal []int
+
+	for _, info := range infos {
+		if !info.isANSI {
+			plainText.WriteRune(info.val)
+			plainToOriginal = append(plainToOriginal, info.bytePos)
+		}
+	}
+
+	plainStr := plainText.String()
+	plainLower := strings.ToLower(plainStr)
+
+	var matches [][]int
+	lastIdx := 0
+	for {
+		idx := strings.Index(plainLower[lastIdx:], lowerQuery)
+		if idx == -1 {
+			break
+		}
+		startRuneIdx := utf8.RuneCountInString(plainStr[:lastIdx+idx])
+		queryRuneLen := utf8.RuneCountInString(query)
+		endRuneIdx := startRuneIdx + queryRuneLen
+
+		matches = append(matches, []int{startRuneIdx, endRuneIdx})
+		lastIdx = lastIdx + idx + len(query)
+	}
+
+	if len(matches) == 0 {
+		return text
+	}
+
+	var result strings.Builder
+	lastOrigByte := 0
+
+	for _, match := range matches {
+		startRune := match[0]
+		endRune := match[1]
+
+		origStartByte := plainToOriginal[startRune]
+		origEndByte := len(text)
+		if endRune < len(plainToOriginal) {
+			origEndByte = plainToOriginal[endRune]
+		}
+
+		result.WriteString(text[lastOrigByte:origStartByte])
+
+		matchText := text[origStartByte:origEndByte]
+		highlighted := lipgloss.NewStyle().Foreground(colYellow).Bold(true).Render(matchText)
+		result.WriteString(highlighted)
+
+		lastOrigByte = origEndByte
+	}
+
+	result.WriteString(text[lastOrigByte:])
+	return result.String()
+}
+
+// RebuildSearchPopupResults filters the history messages by search query, merges context, and updates state.
+func (m *Model) RebuildSearchPopupResults() {
+	query := strings.TrimSpace(m.searchInput.Value())
+	if query == "" {
+		m.app.SearchPopupResults = nil
+		m.app.SearchPopupSelectedIndex = 0
+		return
+	}
+
+	chat := m.app.GetSelectedChat()
+	if chat == nil {
+		return
+	}
+
+	// Retrieve all loaded messages for this chat so far
+	history, ok := m.app.HistoryMessages[chat.ID]
+	if !ok || len(history) == 0 {
+		m.app.SearchPopupResults = nil
+		m.app.SearchPopupSelectedIndex = 0
+		return
+	}
+
+	// Save the currently selected message ID to maintain selection focus.
+	var prevSelectedID string
+	if len(m.app.SearchPopupResults) > 0 && m.app.SearchPopupSelectedIndex < len(m.app.SearchPopupResults) {
+		prevSelectedID = m.app.SearchPopupResults[m.app.SearchPopupSelectedIndex].Message.ID
+	}
+	// Save the first visible message ID to freeze screen position.
+	var prevFirstVisibleID string
+	if len(m.app.SearchPopupResults) > 0 && m.app.SearchPopupScrollOffset < len(m.app.SearchPopupResults) {
+		prevFirstVisibleID = m.app.SearchPopupResults[m.app.SearchPopupScrollOffset].Message.ID
+	}
+
+	// First, find all matching indices in the history list.
+	matches := make(map[int]bool)
+	for i := range history {
+		if m.messageMatches(&history[i], query) {
+			matches[i] = true
+		}
+	}
+
+	if len(matches) == 0 {
+		m.app.SearchPopupResults = nil
+		m.app.SearchPopupSelectedIndex = 0
+		return
+	}
+
+	// We want to include context messages: x before and x after each match.
+	x := ResolveSearchContextLimit()
+
+	// Gather all indices we should include. Use a map to automatically avoid duplicates.
+	includedIndices := make(map[int]bool)
+	for matchIdx := range matches {
+		includedIndices[matchIdx] = true
+		for j := 1; j <= x; j++ {
+			// Older context
+			if matchIdx+j < len(history) {
+				includedIndices[matchIdx+j] = true
+			}
+			// Newer context
+			if matchIdx-j >= 0 {
+				includedIndices[matchIdx-j] = true
+			}
+		}
+	}
+
+	// Merge expanded indices for this chat
+	if state, ok := m.app.SearchStates[chat.ID]; ok && state.ExpandedIndices != nil {
+		for idx := range state.ExpandedIndices {
+			if idx >= 0 && idx < len(history) {
+				includedIndices[idx] = true
+			}
+		}
+	}
+
+	// Sort the included indices. Since history is newest-first (index 0 is newest, len-1 is oldest),
+	// if we sort included indices in descending order (e.g. from largest index to smallest),
+	// we will render the popup list in chronological order (oldest at the top, newest at the bottom)!
+	var sortedIndices []int
+	for i := len(history) - 1; i >= 0; i-- {
+		if includedIndices[i] {
+			sortedIndices = append(sortedIndices, i)
+		}
+	}
+
+	// Build the items list.
+	var items []SearchPopupItem
+	for _, idx := range sortedIndices {
+		items = append(items, SearchPopupItem{
+			Message:      history[idx],
+			IsMatch:      matches[idx],
+			HistoryIndex: idx,
+		})
+	}
+
+	m.app.SearchPopupResults = items
+
+	// Restore selection focus by message ID to prevent scrolling/jumping when older history loads
+	if prevSelectedID != "" {
+		found := false
+		for i, item := range items {
+			if item.Message.ID == prevSelectedID {
+				m.app.SearchPopupSelectedIndex = i
+				found = true
+				break
+			}
+		}
+		if !found {
+			if m.app.SearchPopupSelectedIndex >= len(items) {
+				m.app.SearchPopupSelectedIndex = len(items) - 1
+			}
+		}
+	} else {
+		if m.app.SearchPopupSelectedIndex >= len(items) {
+			m.app.SearchPopupSelectedIndex = len(items) - 1
+		}
+	}
+	if m.app.SearchPopupSelectedIndex < 0 {
+		m.app.SearchPopupSelectedIndex = 0
+	}
+
+	// Restore scroll offset by message ID to freeze screen position
+	if prevFirstVisibleID != "" {
+		for i, item := range items {
+			if item.Message.ID == prevFirstVisibleID {
+				m.app.SearchPopupScrollOffset = i
+				break
+			}
+		}
+	}
+}
+
+// renderSearchPopup draws the beautiful search interface modal on top of screen.
+func (m Model) renderSearchPopup(w, h int) string {
+	chat := m.app.GetSelectedChat()
+	if chat == nil {
+		return ""
+	}
+
+	titleStyle := lipgloss.NewStyle().Foreground(colYellow).Bold(true)
+	titleText := "Search History (Enter to search)"
+	if m.app.SearchQuery != "" {
+		titleText = fmt.Sprintf("Search History: %s | Results for '%s'", *chat.CachedDisplayName, m.app.SearchQuery)
+	}
+	title := titleStyle.Render(titleText)
+
+	instructions := lipgloss.NewStyle().Foreground(colDimGray).Render(
+		" j/k: Nav | y: Yank | u: URL | o/Enter: Expand context | /: Edit | Esc: Close",
+	)
+
+	var list strings.Builder
+	list.WriteString(title + "\n")
+	list.WriteString(instructions + "\n\n")
+
+	results := m.app.SearchPopupResults
+	msgH := h - 10
+	if msgH < 3 {
+		msgH = 3
+	}
+
+	if len(results) == 0 {
+		if m.app.SearchQuery == "" {
+			list.WriteString(lipgloss.NewStyle().Foreground(colDimGray).Render("Type a query and press Enter to search.") + "\n")
+		} else {
+			list.WriteString(lipgloss.NewStyle().Foreground(colDimGray).Render("No matching messages found.") + "\n")
+		}
+		// Fill remaining lines to keep height stable
+		for l := 1; l < msgH; l++ {
+			list.WriteString("\n")
+		}
+	} else {
+		// Keep selected index visible
+		if m.app.SearchPopupSelectedIndex < m.app.SearchPopupScrollOffset {
+			m.app.SearchPopupScrollOffset = m.app.SearchPopupSelectedIndex
+		}
+		if m.app.SearchPopupScrollOffset < 0 {
+			m.app.SearchPopupScrollOffset = 0
+		}
+
+		// Adjust scroll offset to keep selected item visible at the bottom:
+		for {
+			hSum := 0
+			for i := m.app.SearchPopupScrollOffset; i <= m.app.SearchPopupSelectedIndex && i < len(results); i++ {
+				item := results[i]
+				body := item.Message.GetPlainText()
+				if item.IsMatch {
+					body = highlightQuery(body, m.app.SearchQuery)
+				}
+				bodyW := w - 8
+				if bodyW < 10 {
+					bodyW = 10
+				}
+				bodyLines := wordWrap(body, bodyW)
+				hSum += len(bodyLines) + 1 // body lines + 1 header line
+				
+				// Add gap indicator height if applicable
+				if i > 0 {
+					prevItem := results[i-1]
+					if prevItem.HistoryIndex-item.HistoryIndex > 1 {
+						hSum += 3 // 3 blank/separator lines
+					}
+				}
+			}
+			if hSum <= msgH || m.app.SearchPopupScrollOffset >= m.app.SearchPopupSelectedIndex {
+				break
+			}
+			m.app.SearchPopupScrollOffset++
+		}
+
+		// Clamp scroll offset to valid bounds
+		if m.app.SearchPopupScrollOffset >= len(results) {
+			m.app.SearchPopupScrollOffset = len(results) - 1
+		}
+		if m.app.SearchPopupScrollOffset < 0 {
+			m.app.SearchPopupScrollOffset = 0
+		}
+
+		// Now render ONLY the visible items starting from SearchPopupScrollOffset
+		var visibleLines []string
+		linesRendered := 0
+
+		for idx := m.app.SearchPopupScrollOffset; idx < len(results); idx++ {
+			item := results[idx]
+
+			// Render gap indicator if applicable
+			var gapLines []string
+			if idx > 0 {
+				prevItem := results[idx-1]
+				if prevItem.HistoryIndex-item.HistoryIndex > 1 {
+					gapLines = append(gapLines, "")
+					gapLines = append(gapLines, lipgloss.NewStyle().Foreground(colDimGray).Render("  ─── [gap in history] ───"))
+					gapLines = append(gapLines, "")
+				}
+			}
+
+			// Render sender + date
+			sender := "Unknown"
+			if item.Message.From != nil && item.Message.From.User != nil && item.Message.From.User.DisplayName != nil {
+				sender = *item.Message.From.User.DisplayName
+			}
+			msgTime, _ := time.Parse(time.RFC3339Nano, item.Message.CreatedDateTime)
+			msgTime = msgTime.Local()
+			dateStr := ""
+			if !msgTime.IsZero() {
+				dateStr = msgTime.Format("2006 Jan 02 15:04")
+			}
+
+			isSelected := idx == m.app.SearchPopupSelectedIndex
+			prefix := "  "
+			if isSelected {
+				prefix = "> "
+			}
+
+			var header string
+			if m.isOwn(item.Message) {
+				senderName := "Me"
+				if item.IsMatch {
+					senderName = highlightQuery(senderName, m.app.SearchQuery)
+				}
+				header = lipgloss.NewStyle().Foreground(colGreen).Render(prefix + dateStr + " " + senderName)
+			} else {
+				senderName := sender
+				if item.IsMatch {
+					senderName = highlightQuery(senderName, m.app.SearchQuery)
+				}
+				header = lipgloss.NewStyle().Foreground(colCyan).Render(prefix + senderName + " " + dateStr)
+			}
+
+			// Render body
+			body := item.Message.GetPlainText()
+			if item.IsMatch {
+				body = highlightQuery(body, m.app.SearchQuery)
+			}
+
+			// Wrap body lines
+			bodyW := w - 8
+			if bodyW < 10 {
+				bodyW = 10
+			}
+			bodyLines := wordWrap(body, bodyW)
+			
+			var itemLines []string
+			itemLines = append(itemLines, header)
+			for _, bl := range bodyLines {
+				lineStyle := lipgloss.NewStyle()
+				if isSelected {
+					lineStyle = lineStyle.Background(colDarkGray)
+				}
+				itemLines = append(itemLines, lineStyle.Render("    "+bl))
+			}
+
+			// Check if we have space to draw this item (or if it's the very first item we must draw it)
+			totalNewLines := len(gapLines) + len(itemLines)
+			if linesRendered+totalNewLines <= msgH || idx == m.app.SearchPopupScrollOffset {
+				visibleLines = append(visibleLines, gapLines...)
+				visibleLines = append(visibleLines, itemLines...)
+				linesRendered += totalNewLines
+			} else {
+				// No more room in viewport, stop rendering!
+				break
+			}
+		}
+
+		// Write viewport lines to buffer
+		for _, line := range visibleLines {
+			list.WriteString(line + "\n")
+		}
+
+		// Fill remaining height with blank lines to keep popup height perfectly stable
+		for l := linesRendered; l < msgH; l++ {
+			list.WriteString("\n")
+		}
+	}
+
+	m.searchInput.Width = w - 10
+	tiView := m.searchInput.View()
+	
+	borderCol := colYellow
+	if !m.app.SearchMode {
+		borderCol = colDimGray
+	}
+	
+	inputBox := lipgloss.NewStyle().
+		BorderStyle(lipgloss.RoundedBorder()).
+		BorderForeground(borderCol).
+		Width(w - 6).Height(3).
+		Render(lipgloss.JoinHorizontal(lipgloss.Left,
+			lipgloss.NewStyle().Foreground(borderCol).Bold(true).Render("🔍 "),
+			tiView,
+		))
+
+	// Render status/loader row above the input box
+	statusText := ""
+	if m.app.SearchStatus != "" {
+		statusText = "  " + lipgloss.NewStyle().Foreground(colYellow).Italic(true).Render(m.app.SearchStatus)
+	} else if m.app.SearchLoadingMessages {
+		statusText = "  " + lipgloss.NewStyle().Foreground(colYellow).Italic(true).Render("⏳ Searching history in background...")
+	}
+
+	list.WriteString(statusText + "\n" + inputBox)
+
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(colYellow).
+		Padding(1, 2).
+		Width(w).Height(h).
+		Render(list.String())
+
+	return box
+}
+
+// handleSearchPopupNavigationKey handles keystrokes inside results list navigation mode.
+func (m Model) handleSearchPopupNavigationKey(msg tea.KeyMsg) (Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "q":
+		m.app.SearchPopupMode = false
+		m.app.SearchMode = false
+		m.saveSearchState()
+		m.app.ScrollOffset = m.app.MainChatScrollOffset
+		m.app.SnapToBottom = m.app.MainChatSnapToBottom
+		return m, nil
+
+	case "j", "down":
+		if m.app.SearchPopupSelectedIndex < len(m.app.SearchPopupResults)-1 {
+			m.app.SearchPopupSelectedIndex++
+		}
+		m.saveSearchState()
+		return m, nil
+
+	case "k", "up":
+		if m.app.SearchPopupSelectedIndex > 0 {
+			m.app.SearchPopupSelectedIndex--
+		}
+		m.saveSearchState()
+		return m, nil
+
+	case "/":
+		m.app.SearchMode = true
+		m.searchInput.Focus()
+		m.saveSearchState()
+		return m, textinput.Blink
+
+	case "y":
+		if len(m.app.SearchPopupResults) > 0 && m.app.SearchPopupSelectedIndex < len(m.app.SearchPopupResults) {
+			msgObj := m.app.SearchPopupResults[m.app.SearchPopupSelectedIndex].Message
+			if msgObj.Body != nil && msgObj.Body.Content != nil {
+				text := stripANSI(HTMLToText(*msgObj.Body.Content, msgObj.Attachments))
+				if err := clipboard.WriteAll(text); err == nil {
+					m.app.SetSearchStatus("Message copied to clipboard", 3*time.Second)
+				} else {
+					m.app.SetSearchStatus("Clipboard error: "+err.Error(), 5*time.Second)
+				}
+			}
+		}
+	case "o", "enter":
+		if len(m.app.SearchPopupResults) > 0 && m.app.SearchPopupSelectedIndex < len(m.app.SearchPopupResults) {
+			item := m.app.SearchPopupResults[m.app.SearchPopupSelectedIndex]
+			chat := m.app.GetSelectedChat()
+			if chat != nil {
+				state, ok := m.app.SearchStates[chat.ID]
+				if !ok {
+					state = &ChatSearchState{
+						ExpandedIndices: make(map[int]bool),
+					}
+					m.app.SearchStates[chat.ID] = state
+				}
+				if state.ExpandedIndices == nil {
+					state.ExpandedIndices = make(map[int]bool)
+				}
+				
+				idx := item.HistoryIndex
+				history := m.app.HistoryMessages[chat.ID]
+				for j := 1; j <= 5; j++ {
+					if idx+j < len(history) {
+						state.ExpandedIndices[idx+j] = true
+					}
+					if idx-j >= 0 {
+						state.ExpandedIndices[idx-j] = true
+					}
+				}
+				
+				m.RebuildSearchPopupResults()
+				m.app.SetSearchStatus("Expanded context by 5 messages before/after", 3*time.Second)
+				m.saveSearchState()
+			}
+		}
+		return m, nil
+
+	case "u":
+		if len(m.app.SearchPopupResults) > 0 && m.app.SearchPopupSelectedIndex < len(m.app.SearchPopupResults) {
+			msgObj := m.app.SearchPopupResults[m.app.SearchPopupSelectedIndex].Message
+			if msgObj.Body != nil && msgObj.Body.Content != nil {
+				urls := ExtractURLs(*msgObj.Body.Content)
+				if len(urls) == 0 {
+					m.app.SetSearchStatus("No URLs found in message", 3*time.Second)
+				} else if len(urls) == 1 {
+					if err := clipboard.WriteAll(urls[0]); err == nil {
+						m.app.SetSearchStatus("URL copied to clipboard", 3*time.Second)
+					}
+				} else {
+					m.app.UrlSelectionMode = true
+					m.app.UrlSelectedIndex = 0
+					m.app.UrlsInMessage = urls
+				}
+			}
+		}
+	}
+
+	return m, nil
+}
+
+// saveSearchState stores the current chat's active search state to the per-chat SearchStates map.
+func (m *Model) saveSearchState() {
+	chat := m.app.GetSelectedChat()
+	if chat == nil {
+		return
+	}
+	state, ok := m.app.SearchStates[chat.ID]
+	if !ok {
+		state = &ChatSearchState{
+			ExpandedIndices: make(map[int]bool),
+		}
+		m.app.SearchStates[chat.ID] = state
+	}
+	if state.ExpandedIndices == nil {
+		state.ExpandedIndices = make(map[int]bool)
+	}
+	state.Query = m.app.SearchQuery
+	state.Results = m.app.SearchPopupResults
+	state.SelectedIndex = m.app.SearchPopupSelectedIndex
+	state.ScrollOffset = m.app.SearchPopupScrollOffset
+}
+
+// loadSearchState restores the search state for the selected chat into active fields.
+func (m *Model) loadSearchState() {
+	chat := m.app.GetSelectedChat()
+	if chat == nil {
+		return
+	}
+	state, ok := m.app.SearchStates[chat.ID]
+	if !ok {
+		m.app.SearchQuery = ""
+		m.app.SearchPopupResults = nil
+		m.app.SearchPopupSelectedIndex = 0
+		m.app.SearchPopupScrollOffset = 0
+		return
+	}
+	m.app.SearchQuery = state.Query
+	m.app.SearchPopupResults = state.Results
+	m.app.SearchPopupSelectedIndex = state.SelectedIndex
+	m.app.SearchPopupScrollOffset = state.ScrollOffset
 }

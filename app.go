@@ -69,11 +69,13 @@ func (n *NotificationMode) UnmarshalJSON(data []byte) error {
 type App struct {
 	Chats           []Chat
 	Status          string
+	SearchStatus    string
 	SelectedIndex   int
 	CurrentUserName *string
 	CurrentUserID   string // used for markChatRead
 	Messages        []Message
 	LoadingMessages bool
+	SearchLoadingMessages bool
 	InputMode       bool
 	InputBuffer     string
 	ScrollOffset    int
@@ -89,6 +91,7 @@ type App struct {
 	NotificationPreviewLen  int
 	VisualBellUntil *time.Time
 	StatusUntil     *time.Time
+	SearchStatusUntil *time.Time
 	NextLink        string
 	PendingScrollID string
 	EditingMessageID *string
@@ -96,6 +99,34 @@ type App struct {
 	UrlSelectedIndex     int
 	UrlsInMessage        []string
 	MessageLineOffsets   []int
+	SearchMode           bool
+	SearchActive         bool
+	SearchQuery          string
+	SearchPopupMode      bool
+	SearchPopupSelectedIndex int
+	SearchPopupScrollOffset  int
+	SearchPopupResults   []SearchPopupItem
+	HistoryMessages      map[string][]Message
+	HistoryNextLink      map[string]string
+	SearchStates         map[string]*ChatSearchState
+	MainChatScrollOffset int
+	MainChatSnapToBottom bool
+}
+
+// ChatSearchState holds the search-specific query and viewport navigation state for a chat.
+type ChatSearchState struct {
+	Query           string
+	Results         []SearchPopupItem
+	SelectedIndex   int
+	ScrollOffset    int
+	ExpandedIndices map[int]bool
+}
+
+// SearchPopupItem represents a message displayed inside the search popup (with context flag).
+type SearchPopupItem struct {
+	Message      Message
+	IsMatch      bool
+	HistoryIndex int
 }
 
 // NewApp creates an App with sensible initial defaults.
@@ -106,6 +137,9 @@ func NewApp() *App {
 		NotificationMode:        NotificationNone,
 		NotificationShowPreview: false,
 		NotificationPreviewLen:  50,
+		HistoryMessages:         make(map[string][]Message),
+		HistoryNextLink:         make(map[string]string),
+		SearchStates:            make(map[string]*ChatSearchState),
 	}
 }
 
@@ -191,6 +225,22 @@ func (a *App) AppendOlderMessages(messages []Message, nextLink string) {
 // SetLoadingMessages toggles the loading indicator.
 func (a *App) SetLoadingMessages(loading bool) {
 	a.LoadingMessages = loading
+}
+
+// SetSearchLoadingMessages toggles the search loading indicator.
+func (a *App) SetSearchLoadingMessages(loading bool) {
+	a.SearchLoadingMessages = loading
+}
+
+// SetSearchStatus sets the search status text, optionally clearing it after duration.
+func (a *App) SetSearchStatus(msg string, duration time.Duration) {
+	a.SearchStatus = msg
+	if duration > 0 {
+		t := time.Now().Add(duration)
+		a.SearchStatusUntil = &t
+	} else {
+		a.SearchStatusUntil = nil
+	}
 }
 
 // GetSelectedChat returns the currently highlighted chat, or nil.

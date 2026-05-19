@@ -17,6 +17,7 @@ Authenticates via **OAuth2 Device Code Flow** (no browser redirect needed), fetc
 - 🔔 Notification modes: None / Console (BEL + visual bell) / System (desktop) / Both
 - 🔄 Background polling — chats and messages refresh automatically every ~3 s
 - 😊 Emoticon Auto-replacement — popular text emoticons (like `:)`, `:D`, `<3`) are automatically converted to Unicode emojis
+- 🔍 Search History — search messages in any chat, recursively loading and indexing all conversation history in the background
 
 - 🔵 Unread Indicators — chats with new messages are marked with a dot (●) and bold text
 - ⬆️ New messages bubble chats to the top of the list
@@ -103,6 +104,16 @@ Configure how many messages to fetch when opening a chat in `~/.config/teams-tui
   ```
   - `message_limit`: The number of messages to fetch (default: 50).
 
+### Search Context Limit
+Configure how many context messages (before and after each search match) to display in the search history popup in `~/.config/teams-tui-go/config.json`:
+
+  ```json
+  {
+    "search_context_limit": 3
+  }
+  ```
+  - `search_context_limit`: The number of context messages before and after each match to include (default: 3).
+
 ---
 
 ## Usage
@@ -127,6 +138,8 @@ On first run (or after token expiry) you will be prompted to visit a URL and ent
 | `↓` / `j`    | Move down in chat list                               |
 | `PgUp` / `K` | Scroll messages up                                   |
 | `PgDn` / `J` | Scroll messages down                                 |
+| `/`          | Open search input (in Normal Mode)                   |
+| `Esc`        | Clear active search (in Normal Mode)                 |
 | `i`          | Enter compose mode                                   |
 | `Enter`      | Send message                                         |
 | `Alt+Enter`  | New line in message                                  |

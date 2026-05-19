@@ -21,6 +21,7 @@ type Config struct {
 	NotificationShowPreview *bool             `json:"notification_show_preview,omitempty"`
 	NotificationPreviewLen  *int              `json:"notification_preview_len,omitempty"`
 	MessageLimit            *int              `json:"message_limit,omitempty"`
+	SearchContextLimit      *int              `json:"search_context_limit,omitempty"`
 }
 
 // GetAppDir returns ~/.config/teams-tui-go/, creating it if necessary.
@@ -107,4 +108,15 @@ func ResolveMessageLimit() int {
 		return *cfg.MessageLimit
 	}
 	return 50
+}
+
+// ResolveSearchContextLimit returns the number of context messages to show before/after matching message:
+//  1. config.json -> search_context_limit
+//  2. Default (3)
+func ResolveSearchContextLimit() int {
+	cfg := LoadConfig()
+	if cfg != nil && cfg.SearchContextLimit != nil && *cfg.SearchContextLimit >= 0 {
+		return *cfg.SearchContextLimit
+	}
+	return 3
 }

@@ -53,7 +53,7 @@ func loadMessagesCmd(clientID, chatID string, chatIndex int) tea.Cmd {
 }
 
 // loadMoreMessagesCmd fetches the next page of messages using a nextLink.
-func loadMoreMessagesCmd(clientID, nextLink string, chatIndex int) tea.Cmd {
+func loadMoreMessagesCmd(clientID, nextLink string, chatIndex int, isSearch bool) tea.Cmd {
 	return func() tea.Msg {
 		token, err := GetValidTokenSilent(clientID)
 		if err != nil {
@@ -63,7 +63,7 @@ func loadMoreMessagesCmd(clientID, nextLink string, chatIndex int) tea.Cmd {
 		if err != nil {
 			return nil
 		}
-		return MsgMoreMessagesLoaded{ChatIndex: chatIndex, Messages: msgs, NextLink: next}
+		return MsgMoreMessagesLoaded{ChatIndex: chatIndex, Messages: msgs, NextLink: next, IsSearch: isSearch}
 	}
 }
 

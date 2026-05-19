@@ -49,6 +49,14 @@ Go-based terminal UI application for Microsoft Teams. Authenticates via OAuth2 D
   - `markRead()` triggers `MarkChatAsRead` API on focus, selection change, or key press
 - **Focus Tracking**: Terminal focus reporting enabled via `\x1b[?1004h`; `tea.FocusMsg`/`BlurMsg` update `focused` state
 - Background tasks issued as Bubble Tea `Cmd` functions returning typed messages (`MsgChatsLoaded`, `MsgMessagesLoaded`, `MsgNewMessage`, `MsgTick`, `MsgSendDone`)
+- **Search Architecture**:
+  - Activated by `/` in normal mode, which opens a beautiful, responsive fullscreen-budgeted modal overlay popup (`SearchPopupMode`) so the main chat view remains completely responsive and lag-free.
+  - Pressing `Enter` in the search textinput submits the query, focuses the results navigation list, and triggers background recursive loading of older messages directly into a separate `HistoryMessages` cache (updating `HistoryNextLink`) using an `IsSearch` flag to separate background loads from main chat lists.
+  - Matching messages are dynamically parsed with surrounding context window messages (`search_context_limit`, default 3) before and after, automatically deduplicated, sorted chronologically, and drawn with high-contrast gap indicators (`─── [gap in history] ───`) for breaks in conversation flow.
+  - In navigation mode, `j`/`k` scroll results, `y` yanks the selected message body, and `u` extracts/selection-copies URLs.
+  - History cache, query, selected result index, and viewport scroll offsets are fully preserved and persisted *per chat* on close/reopen, avoiding redundant downloads and maintaining independent search states when switching between chats.
+  - Main chat viewport offsets and snap-to-bottom values are preserved and restored cleanly when entering and exiting search popup mode.
+
 
 ### Main / Entry Point (`main.go`)
 - Startup: banner → auth → profile → chats → concurrent initial message fetch for sort → sort → init model → run

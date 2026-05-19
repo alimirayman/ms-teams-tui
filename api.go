@@ -57,6 +57,22 @@ type Message struct {
 	Body            *MessageBody        `json:"body,omitempty"`
 	Attachments     []MessageAttachment `json:"attachments,omitempty"`
 	Reactions       []MessageReaction   `json:"reactions,omitempty"`
+	PlainTextCached *string             `json:"-"`
+}
+
+// GetPlainText returns the cached plain text of the message, parsing HTML on demand once.
+func (msg *Message) GetPlainText() string {
+	if msg.PlainTextCached != nil {
+		return *msg.PlainTextCached
+	}
+	if msg.Body == nil || msg.Body.Content == nil {
+		empty := ""
+		msg.PlainTextCached = &empty
+		return empty
+	}
+	text := HTMLToText(*msg.Body.Content, msg.Attachments)
+	msg.PlainTextCached = &text
+	return text
 }
 
 // MessageReaction represents a reaction to a message.
