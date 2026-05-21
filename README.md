@@ -18,6 +18,7 @@ Authenticates via **OAuth2 Device Code Flow** (no browser redirect needed), fetc
 - 🔄 Background polling — chats and messages refresh automatically every ~3 s
 - 😊 Emoticon Auto-replacement — popular text emoticons (like `:)`, `:D`, `<3`) are automatically converted to Unicode emojis
 - 🔍 Search History — search messages in any chat, recursively loading and indexing all conversation history in the background
+- 🔍 Chat Search & Open — filter locally loaded chats or open/start a 1:1 chat directly by entering a UPN/email (bypassing directory search)
 
 - 🔵 Unread Indicators — chats with new messages are marked with a dot (●) and bold text
 - 😊 Reaction Indicators — chats with new reactions from other users are marked with their corresponding emoji (e.g. ❤️, 👍, 😆) and bold text
@@ -141,6 +142,7 @@ On first run (or after token expiry) you will be prompted to visit a URL and ent
 | `PgDn` / `J` | Scroll messages down                                 |
 | `/`          | Open search input (in Normal Mode)                   |
 | `Esc`        | Clear active search (in Normal Mode)                 |
+| `f`          | Open user search / chat creation popup               |
 | `i`          | Enter compose mode                                   |
 | `Enter`      | Send message                                         |
 | `Alt+Enter`  | New line in message                                  |

@@ -77,6 +77,18 @@ type MsgTick struct{}
 // MsgSendDone signals that a message send attempt has completed.
 type MsgSendDone struct{ Err error }
 
+// MsgUserSearchDone is sent when the directory search completes.
+type MsgUserSearchDone struct {
+	Users []User
+	Err   error
+}
+
+// MsgCreateChatDone is sent when a chat creation/retrieval completes.
+type MsgCreateChatDone struct {
+	Chat *Chat
+	Err  error
+}
+
 // MsgBackgroundMessagesLoaded is sent when messages are fetched in the background to inspect reactions.
 type MsgBackgroundMessagesLoaded struct {
 	ChatID   string
@@ -108,6 +120,9 @@ type Model struct {
 
 	// Textinput for searching.
 	searchInput textinput.Model
+
+	// Textinput for searching users.
+	userSearchInput textinput.Model
 
 	// Stable ordering of chat IDs.
 	stableChatOrder []string
@@ -157,12 +172,18 @@ func NewModel(app *App, clientID, userID string) Model {
 	ti.CharLimit = 100
 	ti.Width = 40
 
+	tiUser := textinput.New()
+	tiUser.Placeholder = "Filter local chats, or enter exact email to open..."
+	tiUser.CharLimit = 100
+	tiUser.Width = 40
+
 	return Model{
 		app:                  app,
 		clientID:             clientID,
 		userID:               userID,
 		textarea:             ta,
 		searchInput:          ti,
+		userSearchInput:      tiUser,
 		lastMsgID:            make(map[string]string),
 		lastMsgTime:          make(map[string]time.Time),
 		lastReadMsgID:        make(map[string]string),
@@ -199,6 +220,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 	wasInputMode := m.app.InputMode
 	wasSearchMode := m.app.SearchMode
+	wasUserSearchMode := m.app.UserSearchMode
 
 	switch msg := msg.(type) {
 
@@ -673,6 +695,73 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.updateScroll()
 		}
 
+	case MsgUserSearchDone:
+		m.app.UserSearchLoading = false
+		if msg.Err != nil {
+			errStr := msg.Err.Error()
+			if strings.Contains(errStr, "403") {
+				m.app.UserSearchStatus = "⚠️ Directory search not allowed (missing permissions). Enter the exact email/UPN (e.g. user@domain.com) to open/create the chat directly."
+			} else {
+				m.app.UserSearchStatus = "⚠️ Search error: " + errStr
+			}
+			m.app.UserSearchDirectoryResults = nil
+		} else {
+			m.app.UserSearchDirectoryResults = msg.Users
+			if len(msg.Users) == 0 {
+				m.app.UserSearchStatus = "No directory users found matching query."
+			} else {
+				m.app.UserSearchStatus = fmt.Sprintf("Found %d directory users.", len(msg.Users))
+			}
+		}
+		m.app.UserSearchSelectedIndex = 0
+
+	case MsgCreateChatDone:
+		m.app.UserSearchLoading = false
+		if msg.Err != nil {
+			m.app.UserSearchStatus = "⚠️ Create chat error: " + msg.Err.Error()
+		} else if msg.Chat != nil {
+			m.app.UserSearchPopupMode = false
+			m.app.UserSearchMode = false
+			m.app.UserSearchQuery = ""
+			m.app.UserSearchLocalResults = nil
+			m.app.UserSearchDirectoryResults = nil
+
+			chat := *msg.Chat
+			if m.app.CurrentUserName != nil {
+				chat.Members = filterMember(chat.Members, *m.app.CurrentUserName)
+			}
+			name := computeDisplayName(&chat)
+			chat.CachedDisplayName = &name
+
+			existsInLatest := false
+			for _, c := range m.latestChats {
+				if c.ID == chat.ID {
+					existsInLatest = true
+					break
+				}
+			}
+			if !existsInLatest {
+				m.latestChats = append([]Chat{chat}, m.latestChats...)
+			}
+
+			m.promoteChat(chat.ID)
+			m = m.mergeChats(m.latestChats)
+
+			for i, c := range m.app.Chats {
+				if c.ID == chat.ID {
+					m.app.SelectedIndex = i
+					break
+				}
+			}
+
+			m.app.Messages = nil
+			m.app.NextLink = ""
+			m.app.SetLoadingMessages(true)
+			m.app.SnapToBottom = true
+
+			cmds = append(cmds, loadMessagesCmd(m.clientID, chat.ID, m.app.SelectedIndex))
+		}
+
 	// ── Focus / Blur ─────────────────────────────────────────────────────
 	case tea.FocusMsg:
 		m.focused = true
@@ -739,6 +828,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, cmd)
 	}
 
+	// Update user search input if in user search mode.
+	if m.app.UserSearchMode && wasUserSearchMode {
+		var cmd tea.Cmd
+		oldVal := m.userSearchInput.Value()
+		m.userSearchInput, cmd = m.userSearchInput.Update(msg)
+		cmds = append(cmds, cmd)
+
+		newVal := m.userSearchInput.Value()
+		if oldVal != newVal {
+			m.app.UserSearchQuery = newVal
+			m.updateUserSearchLocalResults()
+			m.app.UserSearchSelectedIndex = 0
+		}
+	}
+
 	return m, tea.Batch(cmds...)
 }
 
@@ -746,6 +850,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	if m.app.InputMode {
 		return m.handleInputModeKey(msg)
+	}
+	if m.app.UserSearchPopupMode {
+		if m.app.UserSearchMode {
+			return m.handleUserSearchInputModeKey(msg)
+		}
+		return m.handleUserSearchNavigationKey(msg)
 	}
 	if m.app.SearchPopupMode {
 		if m.app.SearchMode {
@@ -797,6 +907,19 @@ func (m Model) handleNormalModeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		m.app.InputBuffer = ""
 		m.textarea.Reset()
 		return m, m.textarea.Focus()
+
+	case "f":
+		m.app.UserSearchPopupMode = true
+		m.app.UserSearchMode = true
+		m.app.UserSearchQuery = ""
+		m.app.UserSearchStatus = ""
+		m.app.UserSearchLocalResults = nil
+		m.app.UserSearchDirectoryResults = nil
+		m.app.UserSearchSelectedIndex = 0
+		m.app.UserSearchLoading = false
+		m.userSearchInput.SetValue("")
+		m.userSearchInput.Focus()
+		return m, textinput.Blink
 
 	case "/":
 		m.app.MainChatScrollOffset = m.app.ScrollOffset
@@ -1249,6 +1372,19 @@ func (m Model) View() string {
 		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, modal)
 	}
 
+	if m.app.UserSearchPopupMode {
+		popupW := m.width * 85 / 100
+		popupH := m.height * 80 / 100
+		if popupW < 40 {
+			popupW = 40
+		}
+		if popupH < 10 {
+			popupH = 10
+		}
+		modal := m.renderUserSearchPopup(popupW, popupH)
+		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, modal)
+	}
+
 	if m.app.SearchPopupMode {
 		popupW := m.width * 85 / 100
 		popupH := m.height * 80 / 100
@@ -1321,7 +1457,7 @@ func (m Model) renderRightPanel(w, h int) string {
 
 func (m Model) renderChatList(w, h int) string {
 	title := lipgloss.NewStyle().Foreground(colDimGray).
-		Render("Teams Chats (j↑/k↓ to navigate, q to quit)")
+		Render("Chats (j/k: nav, f: find, q: quit)")
 
 	if len(m.app.Chats) == 0 {
 		return lipgloss.JoinVertical(lipgloss.Left, title, m.app.Status)
@@ -2795,4 +2931,259 @@ func mergeHistoryMessages(existing []Message, newMsgs []Message) []Message {
 		return merged[i].CreatedDateTime > merged[j].CreatedDateTime
 	})
 	return merged
+}
+
+type UserSearchItemType int
+const (
+	UserSearchItemLocal UserSearchItemType = iota
+	UserSearchItemDirectory
+	UserSearchItemDirect
+)
+
+type UserSearchItem struct {
+	Type        UserSearchItemType
+	LocalChat   *Chat
+	DirUser     *User
+	DirectEmail string
+}
+
+func (m Model) getUserSearchItems() []UserSearchItem {
+	var items []UserSearchItem
+	
+	// Only Local results
+	for i := range m.app.UserSearchLocalResults {
+		items = append(items, UserSearchItem{
+			Type:      UserSearchItemLocal,
+			LocalChat: &m.app.UserSearchLocalResults[i],
+		})
+	}
+	
+	return items
+}
+
+func (m *Model) updateUserSearchLocalResults() {
+	query := strings.ToLower(strings.TrimSpace(m.app.UserSearchQuery))
+	if query == "" {
+		m.app.UserSearchLocalResults = nil
+		return
+	}
+	
+	var matches []Chat
+	for _, c := range m.app.Chats {
+		name := ""
+		if c.CachedDisplayName != nil {
+			name = strings.ToLower(*c.CachedDisplayName)
+		}
+		
+		memberMatch := false
+		for _, mem := range c.Members {
+			if mem.DisplayName != nil && strings.Contains(strings.ToLower(*mem.DisplayName), query) {
+				memberMatch = true
+				break
+			}
+			if mem.Email != nil && strings.Contains(strings.ToLower(*mem.Email), query) {
+				memberMatch = true
+				break
+			}
+		}
+		
+		if strings.Contains(name, query) || memberMatch {
+			matches = append(matches, c)
+		}
+	}
+	m.app.UserSearchLocalResults = matches
+}
+
+func (m Model) handleUserSearchInputModeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.app.UserSearchMode = false
+		m.userSearchInput.Blur()
+		return m, nil
+
+	case "down", "up", "tab":
+		m.app.UserSearchMode = false
+		m.userSearchInput.Blur()
+		m.app.UserSearchSelectedIndex = 0
+		return m, nil
+
+	case "enter":
+		query := strings.TrimSpace(m.userSearchInput.Value())
+		m.app.UserSearchMode = false
+		m.userSearchInput.Blur()
+		if query != "" {
+			if strings.Contains(query, "@") {
+				m.app.UserSearchLoading = true
+				m.app.UserSearchStatus = "Opening chat..."
+				return m, createChatCmd(m.clientID, m.userID, query)
+			}
+		}
+		return m, nil
+	}
+
+	return m, nil
+}
+
+func (m Model) handleUserSearchNavigationKey(msg tea.KeyMsg) (Model, tea.Cmd) {
+	items := m.getUserSearchItems()
+	
+	switch msg.String() {
+	case "esc", "q":
+		m.app.UserSearchPopupMode = false
+		m.app.UserSearchMode = false
+		return m, nil
+
+	case "j", "down":
+		if len(items) > 0 && m.app.UserSearchSelectedIndex < len(items)-1 {
+			m.app.UserSearchSelectedIndex++
+		}
+		return m, nil
+
+	case "k", "up":
+		if len(items) > 0 && m.app.UserSearchSelectedIndex > 0 {
+			m.app.UserSearchSelectedIndex--
+		}
+		return m, nil
+
+	case "/":
+		m.app.UserSearchMode = true
+		m.userSearchInput.Focus()
+		return m, textinput.Blink
+
+	case "enter":
+		if len(items) == 0 || m.app.UserSearchSelectedIndex >= len(items) {
+			return m, nil
+		}
+		
+		item := items[m.app.UserSearchSelectedIndex]
+		if item.Type == UserSearchItemLocal {
+			targetID := item.LocalChat.ID
+			idx := -1
+			for i, c := range m.app.Chats {
+				if c.ID == targetID {
+					idx = i
+					break
+				}
+			}
+			if idx != -1 {
+				m.app.SelectedIndex = idx
+				m.app.UserSearchPopupMode = false
+				m.app.UserSearchMode = false
+				m.app.Messages = nil
+				m.app.NextLink = ""
+				m.app.SetLoadingMessages(true)
+				m.app.SnapToBottom = true
+				return m, loadMessagesCmd(m.clientID, targetID, idx)
+			}
+		}
+	}
+	
+	return m, nil
+}
+
+func (m Model) renderUserSearchPopup(w, h int) string {
+	titleStyle := lipgloss.NewStyle().Foreground(colCyan).Bold(true)
+	title := titleStyle.Render("Find Local Chat or Start Direct Chat")
+
+	instructions := lipgloss.NewStyle().Foreground(colDimGray).Render(
+		" j/k: Nav | Enter: Open selected chat or typed email | /: Edit | Esc: Close",
+	)
+
+	var list strings.Builder
+	list.WriteString(title + "\n")
+	list.WriteString(instructions + "\n\n")
+
+	items := m.getUserSearchItems()
+	msgH := h - 10
+	if msgH < 3 {
+		msgH = 3
+	}
+
+	if len(items) == 0 {
+		if m.app.UserSearchQuery == "" {
+			list.WriteString(lipgloss.NewStyle().Foreground(colDimGray).Render("Type a name/email and press Enter/arrows.") + "\n")
+		} else {
+			list.WriteString(lipgloss.NewStyle().Foreground(colDimGray).Render("No matching local chats found.") + "\n")
+		}
+		for l := 1; l < msgH; l++ {
+			list.WriteString("\n")
+		}
+	} else {
+		if m.app.UserSearchSelectedIndex >= len(items) {
+			m.app.UserSearchSelectedIndex = len(items) - 1
+		}
+		if m.app.UserSearchSelectedIndex < 0 {
+			m.app.UserSearchSelectedIndex = 0
+		}
+
+		linesRendered := 0
+		for idx, item := range items {
+			isSelected := idx == m.app.UserSearchSelectedIndex
+			prefix := "  "
+			if isSelected {
+				prefix = "> "
+			}
+
+			var line string
+			switch item.Type {
+			case UserSearchItemLocal:
+				chatName := "Unknown"
+				if item.LocalChat.CachedDisplayName != nil {
+					chatName = *item.LocalChat.CachedDisplayName
+				}
+				tag := lipgloss.NewStyle().Foreground(colGreen).Render("[Local Chat]")
+				lineStr := fmt.Sprintf("%s %s %s", prefix, chatName, tag)
+				if isSelected {
+					line = lipgloss.NewStyle().Background(colDarkGray).Render(lineStr)
+				} else {
+					line = lineStr
+				}
+			}
+
+			list.WriteString(line + "\n")
+			linesRendered++
+			if linesRendered >= msgH {
+				break
+			}
+		}
+
+		for l := linesRendered; l < msgH; l++ {
+			list.WriteString("\n")
+		}
+	}
+
+	m.userSearchInput.Width = w - 10
+	tiView := m.userSearchInput.View()
+
+	borderCol := colCyan
+	if !m.app.UserSearchMode {
+		borderCol = colDimGray
+	}
+
+	inputBox := lipgloss.NewStyle().
+		BorderStyle(lipgloss.RoundedBorder()).
+		BorderForeground(borderCol).
+		Width(w - 6).Height(3).
+		Render(lipgloss.JoinHorizontal(lipgloss.Left,
+			lipgloss.NewStyle().Foreground(borderCol).Bold(true).Render("🔍 "),
+			tiView,
+		))
+
+	statusText := ""
+	if m.app.UserSearchStatus != "" {
+		statusText = "  " + lipgloss.NewStyle().Foreground(colYellow).Italic(true).Render(m.app.UserSearchStatus)
+	} else if m.app.UserSearchLoading {
+		statusText = "  " + lipgloss.NewStyle().Foreground(colYellow).Italic(true).Render("⏳ Opening chat...")
+	}
+
+	list.WriteString(statusText + "\n" + inputBox)
+
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(colCyan).
+		Padding(1, 2).
+		Width(w).Height(h).
+		Render(list.String())
+
+	return box
 }

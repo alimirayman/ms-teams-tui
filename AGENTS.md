@@ -57,6 +57,15 @@ Go-based terminal UI application for Microsoft Teams. Authenticates via OAuth2 D
   - In navigation mode, `j`/`k` scroll results, `y` yanks the selected message body, and `u` extracts/selection-copies URLs.
   - History cache, query, selected result index, and viewport scroll offsets are fully preserved and persisted *per chat* on close/reopen, avoiding redundant downloads and maintaining independent search states when switching between chats.
   - Main chat viewport offsets and snap-to-bottom values are preserved and restored cleanly when entering and exiting search popup mode.
+- **Chat Search & Open Popup**:
+  - Activated by `f` in normal mode, which opens a fullscreen-budgeted modal overlay popup (`UserSearchPopupMode`).
+  - While typing (`UserSearchMode`), it filters already loaded chats/members on-the-fly and populates `UserSearchLocalResults` under the `[Local Chat]` category.
+  - Pressing `Enter` in the input field:
+    - If the input contains `@` (looks like an email/UPN), it blurs the input and triggers a background `createChatCmd` calling `POST /chats` with type `oneOnOne` to retrieve/open the chat directly.
+    - Otherwise, it blurs the input to focus the results navigation list.
+  - Displays a filtered list of local chats.
+  - In navigation mode, `j`/`k` move the selection, `/` refocuses the input, and `Enter` opens the selected local chat.
+  - On success of `createChatCmd`, the chat is added/promoted, stable order is rebuilt, and the chat is opened and selected automatically.
 
 
 ### Main / Entry Point (`main.go`)

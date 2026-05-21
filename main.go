@@ -116,6 +116,30 @@ func loadMoreMessagesCmd(clientID, nextLink string, chatIndex int, isSearch bool
 	}
 }
 
+// searchUsersCmd searches the directory for users by name or email.
+func searchUsersCmd(clientID, query string) tea.Cmd {
+	return func() tea.Msg {
+		token, err := GetValidTokenSilent(clientID)
+		if err != nil {
+			return MsgUserSearchDone{Err: err}
+		}
+		users, err := SearchUsers(token, query)
+		return MsgUserSearchDone{Users: users, Err: err}
+	}
+}
+
+// createChatCmd creates or retrieves a 1-on-1 chat with a user by UPN in the background.
+func createChatCmd(clientID, myUserID, otherUPN string) tea.Cmd {
+	return func() tea.Msg {
+		token, err := GetValidTokenSilent(clientID)
+		if err != nil {
+			return MsgCreateChatDone{Err: err}
+		}
+		chat, err := GetOrCreateOneOnOneChat(token, myUserID, otherUPN)
+		return MsgCreateChatDone{Chat: chat, Err: err}
+	}
+}
+
 
 
 // sendMessageCmd sends a message to a chat in the background.

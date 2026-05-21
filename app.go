@@ -111,6 +111,15 @@ type App struct {
 	SearchStates         map[string]*ChatSearchState
 	MainChatScrollOffset int
 	MainChatSnapToBottom bool
+	UserSearchPopupMode      bool
+	UserSearchMode           bool
+	UserSearchQuery          string
+	UserSearchStatus         string
+	UserSearchStatusUntil    *time.Time
+	UserSearchLocalResults   []Chat
+	UserSearchDirectoryResults []User
+	UserSearchSelectedIndex   int
+	UserSearchLoading        bool
 }
 
 // ChatSearchState holds the search-specific query and viewport navigation state for a chat.

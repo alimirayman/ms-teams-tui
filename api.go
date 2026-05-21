@@ -1016,4 +1016,86 @@ func GetTenantID(accessToken string) (string, error) {
 	return org.Value[0].ID, nil
 }
 
+// graphPostWithResponse performs an authenticated POST request and returns the response body.
+func graphPostWithResponse(accessToken, path string, payload any) ([]byte, error) {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("marshal payload: %w", err)
+	}
+	req, err := http.NewRequest(http.MethodPost, graphAPIBase+path, bytes.NewReader(data))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("POST %s: %w", path, err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("POST %s: HTTP %d: %s", path, resp.StatusCode, body)
+	}
+	return body, nil
+}
+
+// SearchUsers searches for users in the tenant directory.
+func SearchUsers(accessToken, query string) ([]User, error) {
+	escaped := strings.ReplaceAll(query, "'", "''")
+	filterExpr := fmt.Sprintf("startsWith(displayName,'%s') or startsWith(userPrincipalName,'%s')", escaped, escaped)
+	path := "/users?$filter=" + url.QueryEscape(filterExpr) + "&$top=10"
+	
+	body, err := graphGet(accessToken, path)
+	if err != nil {
+		return nil, fmt.Errorf("SearchUsers: %w", err)
+	}
+	
+	var r struct {
+		Value []User `json:"value"`
+	}
+	if err := json.Unmarshal(body, &r); err != nil {
+		return nil, fmt.Errorf("SearchUsers parse: %w", err)
+	}
+	return r.Value, nil
+}
+
+// GetOrCreateOneOnOneChat creates a new 1-on-1 chat with the user specified by their UPN (email).
+// If the chat already exists, the Graph API returns the existing one.
+func GetOrCreateOneOnOneChat(accessToken, myUserID, otherUPN string) (*Chat, error) {
+	payload := map[string]any{
+		"chatType": "oneOnOne",
+		"members": []map[string]any{
+			{
+				"@odata.type": "#microsoft.graph.aadUserConversationMember",
+				"roles":       []string{"owner"},
+				"user@odata.bind": fmt.Sprintf("https://graph.microsoft.com/v1.0/users('%s')", myUserID),
+			},
+			{
+				"@odata.type": "#microsoft.graph.aadUserConversationMember",
+				"roles":       []string{"owner"},
+				"user@odata.bind": fmt.Sprintf("https://graph.microsoft.com/v1.0/users('%s')", otherUPN),
+			},
+		},
+	}
+
+	body, err := graphPostWithResponse(accessToken, "/chats", payload)
+	if err != nil {
+		return nil, fmt.Errorf("create chat: %w", err)
+	}
+
+	var chat Chat
+	if err := json.Unmarshal(body, &chat); err != nil {
+		return nil, fmt.Errorf("unmarshal chat response: %w", err)
+	}
+
+	// Fetch members for the chat to compute display name properly
+	chat.Members = GetChatMembers(accessToken, chat.ID)
+
+	return &chat, nil
+}
+
 
