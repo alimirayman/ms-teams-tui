@@ -294,6 +294,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.ChatIndex != m.app.SelectedIndex {
 			break
 		}
+		m.app.SetLoadingMessages(false)
 		prev := m.app.Messages
 		// Only update if content changed.
 		if !messagesEqual(prev, msg.Messages) {
@@ -333,32 +334,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if len(msg.Messages) > 0 {
 				chat := m.app.GetSelectedChat()
 				if chat != nil {
-					// 1. Determine the latest message based on lastMessagePreview alignment if available
-					var latestMsg Message
-					var foundPreview bool
-					if chat.LastMessagePreview != nil {
-						for _, mObj := range msg.Messages {
-							if mObj.ID == chat.LastMessagePreview.ID {
-								latestMsg = mObj
-								foundPreview = true
-								break
-							}
-						}
-					}
+					newLastID := ""
+					var newTime time.Time
 
-					// 2. If not found in current messages or preview is nil, fall back to first user message
-					if !foundPreview {
-						latestMsg = msg.Messages[0]
+					if chat.LastMessagePreview != nil {
+						newLastID = chat.LastMessagePreview.ID
+						newTime, _ = time.Parse(time.RFC3339Nano, chat.LastMessagePreview.CreatedDateTime)
+					} else {
+						// Fallback if preview is nil (e.g. very old/inactive chats)
+						latestMsg := msg.Messages[0]
 						for _, msgObj := range msg.Messages {
 							if msgObj.MessageType == "" || msgObj.MessageType == "message" {
 								latestMsg = msgObj
 								break
 							}
 						}
+						newLastID = latestMsg.ID
+						newTime, _ = time.Parse(time.RFC3339Nano, latestMsg.CreatedDateTime)
 					}
-
-					newLastID := latestMsg.ID
-					newTime, _ := time.Parse(time.RFC3339Nano, latestMsg.CreatedDateTime)
 
 					old, ok := m.lastMsgID[chat.ID]
 					if !ok {
@@ -370,7 +363,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.promoteChat(chat.ID)
 
 						// If we sent the message, mark it as read immediately.
-						if m.isOwn(latestMsg) {
+						isOwnMsg := false
+						if chat.LastMessagePreview != nil {
+							if m.app.CurrentUserName != nil && chat.LastMessagePreview.From != nil &&
+								chat.LastMessagePreview.From.User != nil && chat.LastMessagePreview.From.User.DisplayName != nil {
+								isOwnMsg = *chat.LastMessagePreview.From.User.DisplayName == *m.app.CurrentUserName
+							}
+						} else {
+							latestMsg := msg.Messages[0]
+							for _, msgObj := range msg.Messages {
+								if msgObj.MessageType == "" || msgObj.MessageType == "message" {
+									latestMsg = msgObj
+									break
+								}
+							}
+							isOwnMsg = m.isOwn(latestMsg)
+						}
+
+						if isOwnMsg {
 							m.lastReadMsgID[chat.ID] = newLastID
 						}
 					}

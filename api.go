@@ -72,6 +72,11 @@ func (msg *Message) GetPlainText() string {
 		msg.PlainTextCached = &empty
 		return empty
 	}
+	if *msg.Body.Content == "<systemEventMessage/>" {
+		text := "── [system event] ──"
+		msg.PlainTextCached = &text
+		return text
+	}
 	text := HTMLToText(*msg.Body.Content, msg.Attachments)
 	msg.PlainTextCached = &text
 	return text
@@ -529,7 +534,15 @@ func GetChats(accessToken string) ([]Chat, *string, error) {
 	if err := json.Unmarshal(body, &r); err != nil {
 		return nil, nil, fmt.Errorf("GetChats: parse: %w", err)
 	}
-	chats := r.Value
+	// Filter out meeting chats with no messages (LastMessagePreview is nil)
+	var filtered []Chat
+	for _, c := range r.Value {
+		if c.ChatType == "meeting" && c.LastMessagePreview == nil {
+			continue
+		}
+		filtered = append(filtered, c)
+	}
+	chats := filtered
 
 	// Fetch members concurrently.
 	type result struct {
