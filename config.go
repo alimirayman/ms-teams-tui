@@ -22,6 +22,7 @@ type Config struct {
 	NotificationPreviewLen  *int              `json:"notification_preview_len,omitempty"`
 	MessageLimit            *int              `json:"message_limit,omitempty"`
 	SearchContextLimit      *int              `json:"search_context_limit,omitempty"`
+	ChatLimit               *int              `json:"chat_limit,omitempty"`
 }
 
 // GetAppDir returns ~/.config/teams-tui-go/, creating it if necessary.
@@ -120,6 +121,11 @@ func InitConfig() {
 		cfg.SearchContextLimit = &limit
 		modified = true
 	}
+	if cfg.ChatLimit == nil {
+		limit := 50
+		cfg.ChatLimit = &limit
+		modified = true
+	}
 
 	if !exists || modified {
 		_ = SaveConfig(&cfg)
@@ -160,13 +166,13 @@ func ResolveClientID() string {
 // ResolveMessageLimit returns the number of messages to fetch, using precedence:
 //  1. config.json -> message_limit
 //  2. Default (50)
-//  Note: The Microsoft Graph API limits the $top parameter to a maximum of 50.
+//  Note: Capped at 200 to prevent excessive API requests.
 func ResolveMessageLimit() int {
 	cfg := LoadConfig()
 	if cfg != nil && cfg.MessageLimit != nil && *cfg.MessageLimit > 0 {
 		limit := *cfg.MessageLimit
-		if limit > 50 {
-			return 50
+		if limit > 200 {
+			return 200
 		}
 		return limit
 	}
@@ -182,4 +188,20 @@ func ResolveSearchContextLimit() int {
 		return *cfg.SearchContextLimit
 	}
 	return 3
+}
+
+// ResolveChatLimit returns the number of chats to fetch, using precedence:
+//  1. config.json -> chat_limit
+//  2. Default (50)
+//  Note: Capped at 100 to prevent API throttling during concurrent member fetching.
+func ResolveChatLimit() int {
+	cfg := LoadConfig()
+	if cfg != nil && cfg.ChatLimit != nil && *cfg.ChatLimit > 0 {
+		limit := *cfg.ChatLimit
+		if limit > 100 {
+			return 100
+		}
+		return limit
+	}
+	return 50
 }

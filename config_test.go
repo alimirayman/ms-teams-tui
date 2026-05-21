@@ -58,6 +58,9 @@ func TestInitConfig(t *testing.T) {
 	if cfg.SearchContextLimit == nil || *cfg.SearchContextLimit != 3 {
 		t.Errorf("expected search context limit 3, got %v", cfg.SearchContextLimit)
 	}
+	if cfg.ChatLimit == nil || *cfg.ChatLimit != 50 {
+		t.Errorf("expected chat limit 50, got %v", cfg.ChatLimit)
+	}
 
 	// Case 2: Config exists but is missing some options (e.g. partial).
 	// We'll write a custom config with only ClientID and MessageLimit set, and others missing/nil.
@@ -104,6 +107,9 @@ func TestInitConfig(t *testing.T) {
 	if updatedCfg.SearchContextLimit == nil || *updatedCfg.SearchContextLimit != 3 {
 		t.Errorf("expected default search context limit 3, got %v", updatedCfg.SearchContextLimit)
 	}
+	if updatedCfg.ChatLimit == nil || *updatedCfg.ChatLimit != 50 {
+		t.Errorf("expected default chat limit 50, got %v", updatedCfg.ChatLimit)
+	}
 }
 
 func TestResolveMessageLimit(t *testing.T) {
@@ -137,9 +143,83 @@ func TestResolveMessageLimit(t *testing.T) {
 		t.Fatalf("write failed: %v", err)
 	}
 
-	// Resolve the message limit. It must be capped at 50.
+	// Resolve the message limit. It should return 52 now.
 	resolved := ResolveMessageLimit()
-	if resolved != 50 {
-		t.Errorf("expected message limit to be capped at 50, got %d", resolved)
+	if resolved != 52 {
+		t.Errorf("expected message limit to be 52, got %d", resolved)
+	}
+
+	// Test capping limit at 200.
+	limit = 300
+	cfg = Config{
+		MessageLimit: &limit,
+	}
+	data, err = json.Marshal(cfg)
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	if err := os.WriteFile(configPath, data, 0o600); err != nil {
+		t.Fatalf("write failed: %v", err)
+	}
+
+	resolved = ResolveMessageLimit()
+	if resolved != 200 {
+		t.Errorf("expected message limit to be capped at 200, got %d", resolved)
+	}
+}
+
+func TestResolveChatLimit(t *testing.T) {
+	// Set XDG_CONFIG_HOME to a temporary directory.
+	tmpDir, err := os.MkdirTemp("", "teams-tui-config-test-chat-limit")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	oldXdg := os.Getenv("XDG_CONFIG_HOME")
+	defer os.Setenv("XDG_CONFIG_HOME", oldXdg)
+	os.Setenv("XDG_CONFIG_HOME", tmpDir)
+
+	// Write custom config with chat_limit = 72.
+	appDir, err := GetAppDir()
+	if err != nil {
+		t.Fatalf("GetAppDir failed: %v", err)
+	}
+	configPath := filepath.Join(appDir, "config.json")
+
+	limit := 72
+	cfg := Config{
+		ChatLimit: &limit,
+	}
+	data, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	if err := os.WriteFile(configPath, data, 0o600); err != nil {
+		t.Fatalf("write failed: %v", err)
+	}
+
+	// Resolve the chat limit. It should return 72.
+	resolved := ResolveChatLimit()
+	if resolved != 72 {
+		t.Errorf("expected chat limit to be 72, got %d", resolved)
+	}
+
+	// Test capping limit at 100.
+	limit = 150
+	cfg = Config{
+		ChatLimit: &limit,
+	}
+	data, err = json.Marshal(cfg)
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	if err := os.WriteFile(configPath, data, 0o600); err != nil {
+		t.Fatalf("write failed: %v", err)
+	}
+
+	resolved = ResolveChatLimit()
+	if resolved != 100 {
+		t.Errorf("expected chat limit to be capped at 100, got %d", resolved)
 	}
 }

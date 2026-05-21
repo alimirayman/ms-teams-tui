@@ -144,6 +144,9 @@ type Model struct {
 	// Track last-read message IDs per chat to avoid redundant API calls.
 	lastReadMsgID map[string]string
 
+	// Track whether a chat list load is in progress.
+	loadingChats bool
+
 	// Track last-read reaction keys per chat.
 	lastReadReactions map[string]map[string]bool
 
@@ -202,7 +205,7 @@ func NewModel(app *App, clientID, userID string) Model {
 func (m Model) Init() tea.Cmd {
 	return tea.Batch(
 		tickCmd(),
-		loadChatsCmd(m.clientID),
+		loadChatsCmd(m.clientID, m.app.Chats, m.app.CurrentUserName),
 		func() tea.Msg {
 			fmt.Print("\x1b[?1004h") // Enable focus reporting
 			return nil
@@ -244,10 +247,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.app.SearchStatusUntil = nil
 		}
 
-		// Periodic chat refresh every ~3 s.
-		if time.Since(m.lastChatRefresh) >= 3*time.Second {
+		// Periodic chat refresh every ~15 s.
+		if !m.loadingChats && time.Since(m.lastChatRefresh) >= 15*time.Second {
 			m.lastChatRefresh = time.Now()
-			cmds = append(cmds, loadChatsCmd(m.clientID))
+			m.loadingChats = true
+			cmds = append(cmds, loadChatsCmd(m.clientID, m.app.Chats, m.app.CurrentUserName))
 		}
 
 		// Periodic message refresh every ~3 s.
@@ -287,6 +291,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	// ── Chat list loaded ─────────────────────────────────────────────────
 	case MsgChatsLoaded:
+		m.loadingChats = false
 		m.latestChats = msg.Chats
 		if msg.CurrentUserName != nil {
 			m.app.SetCurrentUser(*msg.CurrentUserName)
@@ -942,8 +947,9 @@ func (m Model) handleNormalModeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 			if len(toAdd) > 0 {
 				m.app.HistoryMessages[chat.ID] = append(toAdd, hist...)
 			}
-			if len(hist) == 0 {
+			if !m.app.HistoryInitialized[chat.ID] {
 				m.app.HistoryNextLink[chat.ID] = m.app.NextLink
+				m.app.HistoryInitialized[chat.ID] = true
 			}
 		}
 		m.loadSearchState()
@@ -1886,6 +1892,13 @@ func (m Model) markRead() Model {
 			m.lastReadReactions[chat.ID][rKey] = true
 		}
 	}
+	if hist, ok := m.app.HistoryMessages[chat.ID]; ok {
+		for _, msgObj := range hist {
+			for _, rKey := range m.getReactionKeys(&msgObj) {
+				m.lastReadReactions[chat.ID][rKey] = true
+			}
+		}
+	}
 	for _, c := range m.latestChats {
 		if c.ID == chat.ID {
 			for _, rKey := range m.getReactionKeys(c.LastMessagePreview) {
@@ -2060,9 +2073,13 @@ func (m Model) mergeChats(fresh []Chat) Model {
 	return m.rebuildChatList()
 }
 
-// rebuildChatList reorders app.Chats to match stableChatOrder.
 func (m Model) rebuildChatList() Model {
-	byID := make(map[string]Chat, len(m.latestChats))
+	byID := make(map[string]Chat)
+	// Retain previously loaded chats so they don't disappear from the UI
+	for _, c := range m.app.Chats {
+		byID[c.ID] = c
+	}
+	// Overwrite/add with fresh chat list data from the API
 	for _, c := range m.latestChats {
 		byID[c.ID] = c
 	}

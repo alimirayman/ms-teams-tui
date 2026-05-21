@@ -23,13 +23,13 @@ func tickCmd() tea.Cmd {
 }
 
 // loadChatsCmd fetches the chat list in the background.
-func loadChatsCmd(clientID string) tea.Cmd {
+func loadChatsCmd(clientID string, existingChats []Chat, currentUserName *string) tea.Cmd {
 	return func() tea.Msg {
 		token, err := GetValidTokenSilent(clientID)
 		if err != nil {
 			return nil // silently ignore background refresh errors
 		}
-		chats, currentUser, err := GetChats(token)
+		chats, currentUser, err := GetChats(token, existingChats, currentUserName)
 		if err != nil {
 			return nil
 		}
@@ -316,7 +316,7 @@ func main() {
 	fmt.Printf("✓ Logged in as: %s\n", me.DisplayName)
 
 	// 4. Fetch initial chat list.
-	chats, currentUserName, err := GetChats(accessToken)
+	chats, currentUserName, err := GetChats(accessToken, nil, nil)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "could not fetch chats: %v\n", err)
 		os.Exit(1)

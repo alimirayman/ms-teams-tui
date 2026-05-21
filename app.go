@@ -108,6 +108,7 @@ type App struct {
 	SearchPopupResults   []SearchPopupItem
 	HistoryMessages      map[string][]Message
 	HistoryNextLink      map[string]string
+	HistoryInitialized   map[string]bool
 	SearchStates         map[string]*ChatSearchState
 	MainChatScrollOffset int
 	MainChatSnapToBottom bool
@@ -148,6 +149,7 @@ func NewApp() *App {
 		NotificationPreviewLen:  50,
 		HistoryMessages:         make(map[string][]Message),
 		HistoryNextLink:         make(map[string]string),
+		HistoryInitialized:      make(map[string]bool),
 		SearchStates:            make(map[string]*ChatSearchState),
 	}
 }

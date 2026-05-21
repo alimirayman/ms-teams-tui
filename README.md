@@ -104,7 +104,17 @@ Configure how many messages to fetch when opening a chat in `~/.config/teams-tui
     "message_limit": 50
   }
   ```
-  - `message_limit`: The number of messages to fetch (default: 50).
+  - `message_limit`: The number of messages to fetch (default: 50). For limits greater than 50, the app automatically makes sequential paginated requests. Capped at `200` to prevent excessive API requests.
+
+### Chat Limit
+Configure how many chats to load in the sidebar in `~/.config/teams-tui-go/config.json`:
+
+  ```json
+  {
+    "chat_limit": 50
+  }
+  ```
+  - `chat_limit`: The maximum number of chats to fetch and display (default: 50). Automatically makes paginated requests if needed. Capped at `100` to prevent API rate-limiting during member loading.
 
 ### Search Context Limit
 Configure how many context messages (before and after each search match) to display in the search history popup in `~/.config/teams-tui-go/config.json`:

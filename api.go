@@ -123,7 +123,8 @@ type User struct {
 // ---------------------------------------------------------------------------
 
 type chatsResponse struct {
-	Value []Chat `json:"value"`
+	Value    []Chat  `json:"value"`
+	NextLink *string `json:"@odata.nextLink,omitempty"`
 }
 
 type membersResponse struct {
@@ -320,13 +321,12 @@ func GetChatMembers(accessToken, chatID string) []ChatMember {
 
 // GetMessages returns the messages in a chat (newest first from the API) and a next link for pagination.
 func GetMessages(accessToken, chatID string, top int) ([]Message, string, error) {
-	url := "/chats/" + chatID + "/messages?$orderby=createdDateTime%20desc"
-	if top > 0 {
-		if top > 50 {
-			top = 50
-		}
-		url += fmt.Sprintf("&$top=%d", top)
+	pageSize := top
+	if pageSize > 50 || pageSize <= 0 {
+		pageSize = 50
 	}
+
+	url := fmt.Sprintf("/chats/%s/messages?$orderby=createdDateTime%%20desc&$top=%d", chatID, pageSize)
 	body, err := graphGet(accessToken, url)
 	if err != nil {
 		return nil, "", fmt.Errorf("GetMessages: %w", err)
@@ -336,17 +336,29 @@ func GetMessages(accessToken, chatID string, top int) ([]Message, string, error)
 		return nil, "", fmt.Errorf("GetMessages: parse: %w", err)
 	}
 
-	// Ensure messages are sorted by creation time (newest first).
-	sort.Slice(r.Value, func(i, j int) bool {
-		return r.Value[i].CreatedDateTime > r.Value[j].CreatedDateTime
-	})
-
+	allMsgs := r.Value
 	next := ""
 	if r.NextLink != nil {
 		next = *r.NextLink
 	}
 
-	return r.Value, next, nil
+	// Keep fetching pages if we need more messages and a next link is available.
+	for len(allMsgs) < top && next != "" {
+		nextMsgs, newNext, err := GetMessagesFromLink(accessToken, next)
+		if err != nil {
+			// Return what we have so far instead of failing completely.
+			break
+		}
+		allMsgs = append(allMsgs, nextMsgs...)
+		next = newNext
+	}
+
+	// Ensure messages are sorted by creation time (newest first).
+	sort.Slice(allMsgs, func(i, j int) bool {
+		return allMsgs[i].CreatedDateTime > allMsgs[j].CreatedDateTime
+	})
+
+	return allMsgs, next, nil
 }
 
 // GetMessagesFromLink fetches messages from a full Graph API URL (used for pagination).
@@ -528,8 +540,29 @@ func MarkChatAsRead(accessToken, chatID, userID string) {
 // detects the current user (by frequency analysis), filters the current user
 // from member lists, computes CachedDisplayName, and returns
 // (chats, detectedCurrentUserName).
-func GetChats(accessToken string) ([]Chat, *string, error) {
-	body, err := graphGet(accessToken, "/me/chats?$expand=lastMessagePreview")
+func GetChats(accessToken string, existingChats []Chat, currentUserName *string) ([]Chat, *string, error) {
+	limit := ResolveChatLimit()
+
+	// Build a map of existing members to avoid fetching them again in background refreshes.
+	// We copy the slice to prevent background threads from sharing/mutating slice backing arrays with the UI thread.
+	existingMembers := make(map[string][]ChatMember)
+	for _, c := range existingChats {
+		if len(c.Members) > 0 {
+			membersCopy := make([]ChatMember, len(c.Members))
+			copy(membersCopy, c.Members)
+			existingMembers[c.ID] = membersCopy
+		}
+	}
+
+	// We load a larger batch of chat metadata first to ensure we don't miss recent chats,
+	// since the Graph API does not guarantee chronological order on /me/chats pages.
+	metadataLimit := 150
+	if limit > metadataLimit {
+		metadataLimit = limit
+	}
+
+	url := "/me/chats?$expand=lastMessagePreview"
+	body, err := graphGet(accessToken, url)
 	if err != nil {
 		return nil, nil, fmt.Errorf("GetChats: %w", err)
 	}
@@ -537,42 +570,126 @@ func GetChats(accessToken string) ([]Chat, *string, error) {
 	if err := json.Unmarshal(body, &r); err != nil {
 		return nil, nil, fmt.Errorf("GetChats: parse: %w", err)
 	}
+
+	chats := r.Value
+	next := ""
+	if r.NextLink != nil {
+		next = *r.NextLink
+	}
+
+	// Keep fetching pages of chats if we need more to satisfy the metadata limit.
+	for len(chats) < metadataLimit && next != "" {
+		path := next
+		if strings.HasPrefix(path, graphAPIBase) {
+			path = path[len(graphAPIBase):]
+		} else if strings.HasPrefix(path, graphAPIBeta) {
+			path = path[len(graphAPIBeta):]
+		}
+
+		nextBody, err := graphGet(accessToken, path)
+		if err != nil {
+			break
+		}
+		var nextR chatsResponse
+		if err := json.Unmarshal(nextBody, &nextR); err != nil {
+			break
+		}
+		chats = append(chats, nextR.Value...)
+		if nextR.NextLink != nil {
+			next = *nextR.NextLink
+		} else {
+			next = ""
+		}
+	}
+
 	// Filter out meeting chats with no messages (LastMessagePreview is nil)
 	var filtered []Chat
-	for _, c := range r.Value {
+	for _, c := range chats {
 		if c.ChatType == "meeting" && c.LastMessagePreview == nil {
 			continue
 		}
 		filtered = append(filtered, c)
 	}
-	chats := filtered
+	chats = filtered
 
-	// Fetch members concurrently.
+	// Sort the entire list of chats by latest activity (message or update time) descending.
+	type chatWithTime struct {
+		chat Chat
+		t    time.Time
+	}
+	combined := make([]chatWithTime, len(chats))
+	for i, c := range chats {
+		t := time.Time{}
+		if c.LastMessagePreview != nil {
+			t, _ = time.Parse(time.RFC3339Nano, c.LastMessagePreview.CreatedDateTime)
+		}
+		if c.LastUpdated != nil {
+			lut, _ := time.Parse(time.RFC3339Nano, *c.LastUpdated)
+			if lut.After(t) {
+				t = lut
+			}
+		}
+		combined[i] = chatWithTime{c, t}
+	}
+
+	sort.Slice(combined, func(a, b int) bool {
+		ta := combined[a].t
+		tb := combined[b].t
+		if ta.IsZero() && tb.IsZero() {
+			return false
+		}
+		if ta.IsZero() {
+			return false
+		}
+		if tb.IsZero() {
+			return true
+		}
+		return ta.After(tb)
+	})
+
+	sorted := make([]Chat, len(chats))
+	for i, cw := range combined {
+		sorted[i] = cw.chat
+	}
+	chats = sorted
+
+	// Truncate to the user's requested chat limit.
+	if len(chats) > limit {
+		chats = chats[:limit]
+	}
+
+	// Fetch members concurrently only for the truncated, active chats (if not already cached).
 	type result struct {
 		index   int
 		members []ChatMember
 	}
 	ch := make(chan result, len(chats))
 	for i, c := range chats {
-		go func(i int, c Chat) {
-			ch <- result{i, GetChatMembers(accessToken, c.ID)}
-		}(i, c)
+		go func(i int, id string) {
+			if cached, ok := existingMembers[id]; ok {
+				ch <- result{i, cached}
+			} else {
+				ch <- result{i, GetChatMembers(accessToken, id)}
+			}
+		}(i, c.ID)
 	}
 	for range chats {
 		res := <-ch
 		chats[res.index].Members = res.members
 	}
 
-	// Detect current user by name frequency across oneOnOne chats.
-	currentUserName := detectCurrentUser(chats)
+	// Detect current user by name frequency across oneOnOne chats if not already provided.
+	if currentUserName == nil {
+		currentUserName = detectCurrentUser(chats)
+	}
 
 	// Filter current user from member lists and compute display names.
 	for i := range chats {
 		if currentUserName != nil {
 			chats[i].Members = filterMember(chats[i].Members, *currentUserName)
 		}
-		name := computeDisplayName(&chats[i])
-		chats[i].CachedDisplayName = &name
+		chats[i].CachedDisplayName = new(string)
+		*chats[i].CachedDisplayName = computeDisplayName(&chats[i])
 	}
 
 	return chats, currentUserName, nil
@@ -618,9 +735,9 @@ func detectCurrentUser(chats []Chat) *string {
 	return nil
 }
 
-// filterMember removes the named member from the slice.
+// filterMember removes the named member from the slice by allocating a new slice (never modifying in-place).
 func filterMember(members []ChatMember, name string) []ChatMember {
-	out := members[:0]
+	var out []ChatMember
 	for _, m := range members {
 		if m.DisplayName == nil || *m.DisplayName != name {
 			out = append(out, m)
