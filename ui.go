@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -12,6 +13,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"regexp"
 	"github.com/atotto/clipboard"
+	"github.com/gen2brain/beeep"
 )
 
 // ---------------------------------------------------------------------------
@@ -75,6 +77,17 @@ type MsgTick struct{}
 // MsgSendDone signals that a message send attempt has completed.
 type MsgSendDone struct{ Err error }
 
+// MsgBackgroundMessagesLoaded is sent when messages are fetched in the background to inspect reactions.
+type MsgBackgroundMessagesLoaded struct {
+	ChatID   string
+	Messages []Message
+}
+
+// MsgPollReactionsLoaded is returned when messages for active chats are fetched to inspect reactions.
+type MsgPollReactionsLoaded struct {
+	Results map[string][]Message
+}
+
 // ---------------------------------------------------------------------------
 // Model — the Bubble Tea application model
 // ---------------------------------------------------------------------------
@@ -116,6 +129,18 @@ type Model struct {
 	// Track last-read message IDs per chat to avoid redundant API calls.
 	lastReadMsgID map[string]string
 
+	// Track last-read reaction keys per chat.
+	lastReadReactions map[string]map[string]bool
+
+	// Track whether reactions have been initialized/seen for each chat.
+	reactionsInitialized map[string]bool
+
+	// Track which reactions have already triggered a notification.
+	notifiedReactions map[string]map[string]bool
+
+	// Timer tracking for reaction polling.
+	lastReactionPoll time.Time
+
 	// Track application focus.
 	focused bool
 }
@@ -133,15 +158,18 @@ func NewModel(app *App, clientID, userID string) Model {
 	ti.Width = 40
 
 	return Model{
-		app:           app,
-		clientID:      clientID,
-		userID:        userID,
-		textarea:      ta,
-		searchInput:   ti,
-		lastMsgID:     make(map[string]string),
-		lastMsgTime:   make(map[string]time.Time),
-		lastReadMsgID: make(map[string]string),
-		focused:       true,
+		app:                  app,
+		clientID:             clientID,
+		userID:               userID,
+		textarea:             ta,
+		searchInput:          ti,
+		lastMsgID:            make(map[string]string),
+		lastMsgTime:          make(map[string]time.Time),
+		lastReadMsgID:        make(map[string]string),
+		lastReadReactions:    make(map[string]map[string]bool),
+		reactionsInitialized: make(map[string]bool),
+		notifiedReactions:    make(map[string]map[string]bool),
+		focused:              true,
 	}
 }
 
@@ -209,6 +237,32 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, loadMessagesCmd(m.clientID, chat.ID, idx))
 		}
 
+		// Periodic reaction poll every ~10 s for other active chats.
+		if time.Since(m.lastReactionPoll) >= 10*time.Second {
+			m.lastReactionPoll = time.Now()
+
+			var chatsToPoll []string
+			selectedID := ""
+			if chat := m.app.GetSelectedChat(); chat != nil {
+				selectedID = chat.ID
+			}
+
+			count := 0
+			for _, id := range m.stableChatOrder {
+				if id == selectedID {
+					continue
+				}
+				chatsToPoll = append(chatsToPoll, id)
+				count++
+				if count >= 5 {
+					break
+				}
+			}
+			if len(chatsToPoll) > 0 {
+				cmds = append(cmds, pollReactionsCmd(m.clientID, chatsToPoll))
+			}
+		}
+
 	// ── Chat list loaded ─────────────────────────────────────────────────
 	case MsgChatsLoaded:
 		m.latestChats = msg.Chats
@@ -268,6 +322,42 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.lastMsgID[c.ID] = newID
 				m.lastMsgTime[c.ID] = newTime
 			}
+
+			// Detect new reactions on LastMessagePreview
+			if m.lastReadReactions[c.ID] == nil {
+				m.lastReadReactions[c.ID] = make(map[string]bool)
+			}
+			if ok {
+				var newReactions []MessageReaction
+				for _, rKey := range m.getReactionKeys(c.LastMessagePreview) {
+					if !m.lastReadReactions[c.ID][rKey] {
+						for _, r := range c.LastMessagePreview.Reactions {
+							if getReactionKey(c.LastMessagePreview.ID, r) == rKey {
+								newReactions = append(newReactions, r)
+								break
+							}
+						}
+					}
+				}
+				if len(newReactions) > 0 {
+					isActiveChat := false
+					if selChat := m.app.GetSelectedChat(); selChat != nil && selChat.ID == c.ID && m.focused {
+						isActiveChat = true
+					}
+					if !isActiveChat {
+						m.notifyReaction(c, c.LastMessagePreview, newReactions)
+						m.promoteChat(c.ID)
+					} else {
+						for _, r := range newReactions {
+							m.lastReadReactions[c.ID][getReactionKey(c.LastMessagePreview.ID, r)] = true
+						}
+					}
+				}
+			} else {
+				for _, rKey := range m.getReactionKeys(c.LastMessagePreview) {
+					m.lastReadReactions[c.ID][rKey] = true
+				}
+			}
 		}
 
 		// Build stable order.
@@ -288,6 +378,110 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, loadMessagesCmd(m.clientID, chat.ID, m.app.SelectedIndex))
 		}
 
+	case MsgBackgroundMessagesLoaded:
+		if m.lastReadReactions[msg.ChatID] == nil {
+			m.lastReadReactions[msg.ChatID] = make(map[string]bool)
+		}
+		if m.notifiedReactions[msg.ChatID] == nil {
+			m.notifiedReactions[msg.ChatID] = make(map[string]bool)
+		}
+
+		var chatObj *Chat
+		for _, c := range m.latestChats {
+			if c.ID == msg.ChatID {
+				chatObj = &c
+				break
+			}
+		}
+
+		var newReactions []MessageReaction
+		isInit := !m.reactionsInitialized[msg.ChatID]
+
+		for _, msgObj := range msg.Messages {
+			var msgNewReactions []MessageReaction
+			for _, rKey := range m.getReactionKeys(&msgObj) {
+				if !m.lastReadReactions[msg.ChatID][rKey] {
+					for _, r := range msgObj.Reactions {
+						if getReactionKey(msgObj.ID, r) == rKey {
+							if isInit {
+								m.lastReadReactions[msg.ChatID][rKey] = true
+							} else {
+								if !m.notifiedReactions[msg.ChatID][rKey] {
+									msgNewReactions = append(msgNewReactions, r)
+									m.notifiedReactions[msg.ChatID][rKey] = true
+								}
+							}
+							break
+						}
+					}
+				}
+			}
+			if len(msgNewReactions) > 0 && chatObj != nil {
+				m.notifyReaction(*chatObj, &msgObj, msgNewReactions)
+				newReactions = append(newReactions, msgNewReactions...)
+			}
+		}
+
+		m.reactionsInitialized[msg.ChatID] = true
+		m.app.HistoryMessages[msg.ChatID] = mergeHistoryMessages(m.app.HistoryMessages[msg.ChatID], msg.Messages)
+
+		if len(newReactions) > 0 {
+			m.promoteChat(msg.ChatID)
+		}
+
+	case MsgPollReactionsLoaded:
+		for chatID, msgs := range msg.Results {
+			if m.lastReadReactions[chatID] == nil {
+				m.lastReadReactions[chatID] = make(map[string]bool)
+			}
+			if m.notifiedReactions[chatID] == nil {
+				m.notifiedReactions[chatID] = make(map[string]bool)
+			}
+
+			var chatObj *Chat
+			for _, c := range m.latestChats {
+				if c.ID == chatID {
+					chatObj = &c
+					break
+				}
+			}
+
+			var newReactions []MessageReaction
+			isInit := !m.reactionsInitialized[chatID]
+
+			for _, msgObj := range msgs {
+				var msgNewReactions []MessageReaction
+				for _, rKey := range m.getReactionKeys(&msgObj) {
+					if !m.lastReadReactions[chatID][rKey] {
+						for _, r := range msgObj.Reactions {
+							if getReactionKey(msgObj.ID, r) == rKey {
+								if isInit {
+									m.lastReadReactions[chatID][rKey] = true
+								} else {
+									if !m.notifiedReactions[chatID][rKey] {
+										msgNewReactions = append(msgNewReactions, r)
+										m.notifiedReactions[chatID][rKey] = true
+									}
+								}
+								break
+							}
+						}
+					}
+				}
+				if len(msgNewReactions) > 0 && chatObj != nil {
+					m.notifyReaction(*chatObj, &msgObj, msgNewReactions)
+					newReactions = append(newReactions, msgNewReactions...)
+				}
+			}
+
+			m.reactionsInitialized[chatID] = true
+			m.app.HistoryMessages[chatID] = mergeHistoryMessages(m.app.HistoryMessages[chatID], msgs)
+
+			if len(newReactions) > 0 {
+				m.promoteChat(chatID)
+			}
+		}
+
 	// ── Messages loaded ──────────────────────────────────────────────────
 	case MsgMessagesLoaded:
 		// Discard if the selected chat changed since we issued the load.
@@ -300,9 +494,48 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !messagesEqual(prev, msg.Messages) {
 			isNewMessage := len(prev) == 0 || (len(msg.Messages) > 0 && prev[0].ID != msg.Messages[0].ID)
 			m.app.SetMessages(msg.Messages, msg.NextLink)
+
+			// Detect new reactions in the loaded messages
+			chat := m.app.GetSelectedChat()
+			if chat != nil {
+				if m.lastReadReactions[chat.ID] == nil {
+					m.lastReadReactions[chat.ID] = make(map[string]bool)
+				}
+				if m.notifiedReactions[chat.ID] == nil {
+					m.notifiedReactions[chat.ID] = make(map[string]bool)
+				}
+				isInit := !m.reactionsInitialized[chat.ID]
+				for _, msgObj := range msg.Messages {
+					var msgNewReactions []MessageReaction
+					for _, rKey := range m.getReactionKeys(&msgObj) {
+						if !m.lastReadReactions[chat.ID][rKey] {
+							for _, r := range msgObj.Reactions {
+								if getReactionKey(msgObj.ID, r) == rKey {
+									if isInit {
+										m.lastReadReactions[chat.ID][rKey] = true
+									} else {
+										if !m.notifiedReactions[chat.ID][rKey] {
+											msgNewReactions = append(msgNewReactions, r)
+											if m.focused {
+												m.lastReadReactions[chat.ID][rKey] = true
+											} else {
+												m.notifiedReactions[chat.ID][rKey] = true
+											}
+										}
+									}
+									break
+								}
+							}
+						}
+					}
+					if len(msgNewReactions) > 0 && !m.focused {
+						m.notifyReaction(*chat, &msgObj, msgNewReactions)
+					}
+				}
+				m.reactionsInitialized[chat.ID] = true
+			}
 			
 			// Keep history cache in sync with new incoming messages
-			chat := m.app.GetSelectedChat()
 			if chat != nil {
 				if hist, ok := m.app.HistoryMessages[chat.ID]; ok && len(hist) > 0 {
 					var toPrepend []Message
@@ -332,7 +565,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			// If there is a new message, move this chat to the top.
 			if len(msg.Messages) > 0 {
-				chat := m.app.GetSelectedChat()
 				if chat != nil {
 					newLastID := ""
 					var newTime time.Time
@@ -1122,17 +1354,24 @@ func (m Model) renderChatList(w, h int) string {
 			displayName = *c.CachedDisplayName
 		}
 
-		labelStr := "[" + chatType + "] " + displayName
 		unread := m.isUnread(c)
+		reactionEmoji := m.getLatestUnreadReactionEmoji(c)
+
+		prefix := ""
 		if unread {
-			labelStr = "● " + labelStr
+			prefix += "● "
 		}
+		if reactionEmoji != "" {
+			prefix += reactionEmoji + " "
+		}
+
+		labelStr := prefix + "[" + chatType + "] " + displayName
 
 		var label string
 		if i == m.app.SelectedIndex {
 			label = lipgloss.NewStyle().
 				Foreground(colYellow).
-				Bold(unread).
+				Bold(unread || reactionEmoji != "").
 				Background(colDarkGray).
 				Width(w).
 				MaxWidth(w).
@@ -1140,8 +1379,15 @@ func (m Model) renderChatList(w, h int) string {
 		} else {
 			typeTag := lipgloss.NewStyle().Foreground(colCyan).Render("[" + chatType + "]")
 			base := typeTag + " " + displayName
-			if unread {
-				base = lipgloss.NewStyle().Bold(true).Render("● " + base)
+			if unread || reactionEmoji != "" {
+				pfx := ""
+				if unread {
+					pfx += "● "
+				}
+				if reactionEmoji != "" {
+					pfx += reactionEmoji + " "
+				}
+				base = lipgloss.NewStyle().Bold(true).Render(pfx + base)
 			}
 			label = lipgloss.NewStyle().MaxWidth(w).Render(base)
 		}
@@ -1494,6 +1740,25 @@ func (m Model) markRead() Model {
 			return t
 		}(), chat.ID, m.userID)
 	}
+
+	// Mark reactions in the selected chat as read.
+	if m.lastReadReactions[chat.ID] == nil {
+		m.lastReadReactions[chat.ID] = make(map[string]bool)
+	}
+	for _, msgObj := range m.app.Messages {
+		for _, rKey := range m.getReactionKeys(&msgObj) {
+			m.lastReadReactions[chat.ID][rKey] = true
+		}
+	}
+	for _, c := range m.latestChats {
+		if c.ID == chat.ID {
+			for _, rKey := range m.getReactionKeys(c.LastMessagePreview) {
+				m.lastReadReactions[chat.ID][rKey] = true
+			}
+			break
+		}
+	}
+
 	return m
 }
 
@@ -2380,4 +2645,154 @@ func (m *Model) loadSearchState() {
 	m.app.SearchPopupResults = state.Results
 	m.app.SearchPopupSelectedIndex = state.SelectedIndex
 	m.app.SearchPopupScrollOffset = state.ScrollOffset
+}
+
+// getReactionKey creates a unique identifier for a reaction.
+func getReactionKey(msgID string, r MessageReaction) string {
+	userID := ""
+	if r.User != nil && r.User.User != nil {
+		if r.User.User.ID != nil {
+			userID = *r.User.User.ID
+		} else if r.User.User.DisplayName != nil {
+			userID = *r.User.User.DisplayName
+		}
+	}
+	return msgID + ":" + userID + ":" + r.ReactionType
+}
+
+// isOwnReaction checks if the reaction was added by the current user.
+func (m Model) isOwnReaction(r MessageReaction) bool {
+	if r.User == nil || r.User.User == nil {
+		return false
+	}
+	if m.userID != "" && r.User.User.ID != nil && *r.User.User.ID == m.userID {
+		return true
+	}
+	if m.app.CurrentUserName != nil && r.User.User.DisplayName != nil && *r.User.User.DisplayName == *m.app.CurrentUserName {
+		return true
+	}
+	return false
+}
+
+// getReactionKeys extracts unique reaction keys from a message, ignoring the current user's reactions.
+func (m Model) getReactionKeys(msg *Message) []string {
+	if msg == nil || len(msg.Reactions) == 0 {
+		return nil
+	}
+	var keys []string
+	for _, r := range msg.Reactions {
+		if m.isOwnReaction(r) {
+			continue
+		}
+		keys = append(keys, getReactionKey(msg.ID, r))
+	}
+	return keys
+}
+
+// hasUnreadReactions checks if the chat has any new reactions that the user has not seen.
+func (m Model) hasUnreadReactions(c Chat) bool {
+	return m.getLatestUnreadReactionEmoji(c) != ""
+}
+
+// getLatestUnreadReactionEmoji checks if the chat has any new reactions and returns the emoji of the most recent one.
+func (m Model) getLatestUnreadReactionEmoji(c Chat) string {
+	if chat := m.app.GetSelectedChat(); chat != nil && chat.ID == c.ID && m.focused {
+		return ""
+	}
+
+	// Check reactions on LastMessagePreview first (as it represents the latest message)
+	if c.LastMessagePreview != nil {
+		for _, rKey := range m.getReactionKeys(c.LastMessagePreview) {
+			if readMap, ok := m.lastReadReactions[c.ID]; !ok || !readMap[rKey] {
+				for _, r := range c.LastMessagePreview.Reactions {
+					if getReactionKey(c.LastMessagePreview.ID, r) == rKey {
+						return reactionEmoji(r.ReactionType)
+					}
+				}
+			}
+		}
+	}
+
+	// Check reactions on cached HistoryMessages if we have them
+	if hist, ok := m.app.HistoryMessages[c.ID]; ok {
+		for _, msg := range hist {
+			for _, rKey := range m.getReactionKeys(&msg) {
+				if readMap, ok := m.lastReadReactions[c.ID]; !ok || !readMap[rKey] {
+					for _, r := range msg.Reactions {
+						if getReactionKey(msg.ID, r) == rKey {
+							return reactionEmoji(r.ReactionType)
+						}
+					}
+				}
+			}
+		}
+	}
+
+	return ""
+}
+
+// notifyReaction triggers a notification for newly detected reactions.
+func (m *Model) notifyReaction(chat Chat, msg *Message, newReactions []MessageReaction) {
+	chatName := ""
+	if chat.CachedDisplayName != nil {
+		chatName = *chat.CachedDisplayName
+	}
+
+	for _, r := range newReactions {
+		reactorName := "Someone"
+		if r.User != nil && r.User.User != nil && r.User.User.DisplayName != nil {
+			reactorName = *r.User.User.DisplayName
+		}
+
+		emoji := reactionEmoji(r.ReactionType)
+		msgBody := msg.GetPlainText()
+		msgBody = stripANSI(msgBody)
+		msgBody = strings.ReplaceAll(msgBody, "\n", " ")
+		msgBody = strings.Join(strings.Fields(msgBody), " ")
+		if len(msgBody) > 40 {
+			msgBody = string([]rune(msgBody)[:40]) + "..."
+		}
+
+		title := fmt.Sprintf("TeamsTUI: %s", reactorName)
+		body := fmt.Sprintf("Reacted %s to: \"%s\"", emoji, msgBody)
+		if chatName != "" && chatName != reactorName {
+			body = fmt.Sprintf("Reacted %s to \"%s\" in %s", emoji, msgBody, chatName)
+		}
+
+		switch m.app.NotificationMode {
+		case NotificationConsole:
+			fmt.Print("\a") // BEL
+			m.app.TriggerVisualBell()
+		case NotificationSystem:
+			beeep.AppName = "TeamsTUI"
+			_ = beeep.Notify(title, body, "")
+		case NotificationBoth:
+			fmt.Print("\a")
+			m.app.TriggerVisualBell()
+			beeep.AppName = "TeamsTUI"
+			_ = beeep.Notify(title, body, "")
+		}
+	}
+}
+
+// mergeHistoryMessages combines existing history messages with newly fetched ones,
+// updating existing ones and prepending/sorting them newest-first.
+func mergeHistoryMessages(existing []Message, newMsgs []Message) []Message {
+	msgMap := make(map[string]Message)
+	for _, msg := range existing {
+		msgMap[msg.ID] = msg
+	}
+	for _, msg := range newMsgs {
+		msgMap[msg.ID] = msg
+	}
+
+	var merged []Message
+	for _, msg := range msgMap {
+		merged = append(merged, msg)
+	}
+
+	sort.Slice(merged, func(i, j int) bool {
+		return merged[i].CreatedDateTime > merged[j].CreatedDateTime
+	})
+	return merged
 }

@@ -37,6 +37,55 @@ func loadChatsCmd(clientID string) tea.Cmd {
 	}
 }
 
+// loadBackgroundMessagesCmd fetches the latest 10 messages for a chat to inspect reactions.
+func loadBackgroundMessagesCmd(clientID, chatID string) tea.Cmd {
+	return func() tea.Msg {
+		token, err := GetValidTokenSilent(clientID)
+		if err != nil {
+			return nil
+		}
+		msgs, _, err := GetMessages(token, chatID, 10)
+		if err != nil {
+			return nil
+		}
+		return MsgBackgroundMessagesLoaded{ChatID: chatID, Messages: msgs}
+	}
+}
+
+// pollReactionsCmd fetches the latest 10 messages for a list of chats in parallel.
+func pollReactionsCmd(clientID string, chatIDs []string) tea.Cmd {
+	return func() tea.Msg {
+		token, err := GetValidTokenSilent(clientID)
+		if err != nil {
+			return nil
+		}
+
+		results := make(map[string][]Message)
+		type fetchResult struct {
+			chatID string
+			msgs   []Message
+		}
+		ch := make(chan fetchResult, len(chatIDs))
+		for _, id := range chatIDs {
+			go func(chatID string) {
+				msgs, _, err := GetMessages(token, chatID, 10)
+				if err != nil {
+					ch <- fetchResult{chatID, nil}
+					return
+				}
+				ch <- fetchResult{chatID, msgs}
+			}(id)
+		}
+		for range chatIDs {
+			res := <-ch
+			if res.msgs != nil {
+				results[res.chatID] = res.msgs
+			}
+		}
+		return MsgPollReactionsLoaded{Results: results}
+	}
+}
+
 // loadMessagesCmd fetches messages for a specific chat in the background.
 func loadMessagesCmd(clientID, chatID string, chatIndex int) tea.Cmd {
 	return func() tea.Msg {
@@ -278,6 +327,16 @@ func main() {
 	model.latestChats = chats
 	model.lastMsgID = lastMsgIDs
 	model.lastMsgTime = lastMsgTimes
+	model.lastReadReactions = make(map[string]map[string]bool)
+	model.reactionsInitialized = make(map[string]bool)
+	model.notifiedReactions = make(map[string]map[string]bool)
+	for _, c := range chats {
+		model.lastReadReactions[c.ID] = make(map[string]bool)
+		model.notifiedReactions[c.ID] = make(map[string]bool)
+		for _, rKey := range model.getReactionKeys(c.LastMessagePreview) {
+			model.lastReadReactions[c.ID][rKey] = true
+		}
+	}
 	stableOrder := make([]string, len(chats))
 	for i, c := range chats {
 		stableOrder[i] = c.ID

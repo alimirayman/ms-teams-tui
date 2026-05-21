@@ -47,6 +47,7 @@ Go-based terminal UI application for Microsoft Teams. Authenticates via OAuth2 D
   - `lastReadMsgID` tracks what was read locally in this session
   - `isUnread(chat)` compares latest message time with server viewpoint and local read state
   - `markRead()` triggers `MarkChatAsRead` API on focus, selection change, or key press
+  - **Reactions Read Tracking**: `lastReadReactions` maps chat ID to a set of unique reaction keys (`messageID:reactorNameOrID:reactionType`). Any reaction from another user that is not in this map is considered unread, causing the reaction's actual emoji prefix (e.g. `❤️`, `👍`, `😆`, etc.) to be displayed on the chat in the sidebar and trigger desktop notifications if the app is blurred or not active.
 - **Focus Tracking**: Terminal focus reporting enabled via `\x1b[?1004h`; `tea.FocusMsg`/`BlurMsg` update `focused` state
 - Background tasks issued as Bubble Tea `Cmd` functions returning typed messages (`MsgChatsLoaded`, `MsgMessagesLoaded`, `MsgTick`, `MsgSendDone`)
 - **Search Architecture**:

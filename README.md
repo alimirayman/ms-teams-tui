@@ -20,6 +20,7 @@ Authenticates via **OAuth2 Device Code Flow** (no browser redirect needed), fetc
 - 🔍 Search History — search messages in any chat, recursively loading and indexing all conversation history in the background
 
 - 🔵 Unread Indicators — chats with new messages are marked with a dot (●) and bold text
+- 😊 Reaction Indicators — chats with new reactions from other users are marked with their corresponding emoji (e.g. ❤️, 👍, 😆) and bold text
 - ⬆️ New messages bubble chats to the top of the list
 - 📌 Stable chat ordering — order only changes when new messages arrive
 - 💾 Token persistence — only authenticate once; tokens refresh automatically
