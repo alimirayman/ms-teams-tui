@@ -67,11 +67,7 @@ type MsgMoreMessagesLoaded struct {
 	IsSearch  bool
 }
 
-// MsgNewMessage signals that a new message arrived in a non-selected chat.
-type MsgNewMessage struct {
-	ChatID  string
-	Message Message
-}
+
 
 // MsgTick is the heartbeat used for periodic refresh and bell timeout.
 type MsgTick struct{}
@@ -226,6 +222,54 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			selectedID = chat.ID
 		}
 
+		// Detect new messages in any of the loaded chats.
+		for _, c := range m.latestChats {
+			if c.LastMessagePreview == nil {
+				continue
+			}
+			prevID, ok := m.lastMsgID[c.ID]
+			newID := c.LastMessagePreview.ID
+
+			newTime, _ := time.Parse(time.RFC3339Nano, c.LastMessagePreview.CreatedDateTime)
+
+			if ok && prevID != newID {
+				m.lastMsgID[c.ID] = newID
+				m.lastMsgTime[c.ID] = newTime
+
+				// Determine if it was sent by us.
+				isOwnMsg := false
+				if m.app.CurrentUserName != nil && c.LastMessagePreview.From != nil &&
+					c.LastMessagePreview.From.User != nil && c.LastMessagePreview.From.User.DisplayName != nil {
+					isOwnMsg = *c.LastMessagePreview.From.User.DisplayName == *m.app.CurrentUserName
+				}
+
+				if isOwnMsg {
+					m.lastReadMsgID[c.ID] = newID
+					m.promoteChat(c.ID)
+				} else {
+					// Trigger notification.
+					senderName := ""
+					if c.LastMessagePreview.From != nil && c.LastMessagePreview.From.User != nil && c.LastMessagePreview.From.User.DisplayName != nil {
+						senderName = *c.LastMessagePreview.From.User.DisplayName
+					}
+
+					// Build a temporary Message object for notification.
+					tempMsg := Message{
+						ID:              newID,
+						CreatedDateTime: c.LastMessagePreview.CreatedDateTime,
+						From:            c.LastMessagePreview.From,
+						Body:            c.LastMessagePreview.Body,
+					}
+					m.notify(senderName, tempMsg)
+					m.promoteChat(c.ID)
+				}
+			} else if !ok {
+				// Initialize cache for newly seen chat.
+				m.lastMsgID[c.ID] = newID
+				m.lastMsgTime[c.ID] = newTime
+			}
+		}
+
 		// Build stable order.
 		m = m.mergeChats(m.latestChats)
 
@@ -237,14 +281,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					break
 				}
 			}
-		}
-
-		// Kick off new-message checks for non-selected chats.
-		for i, c := range m.app.Chats {
-			if i == m.app.SelectedIndex {
-				continue
-			}
-			cmds = append(cmds, checkNewMessageCmd(m.clientID, c.ID))
 		}
 
 		// Refresh messages if selected chat is set.
@@ -295,17 +331,46 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			// If there is a new message, move this chat to the top.
 			if len(msg.Messages) > 0 {
-				newLastID := msg.Messages[0].ID // API returns newest first
-				newTime, _ := time.Parse(time.RFC3339Nano, msg.Messages[0].CreatedDateTime)
 				chat := m.app.GetSelectedChat()
 				if chat != nil {
-					if old, ok := m.lastMsgID[chat.ID]; !ok || old != newLastID {
+					// 1. Determine the latest message based on lastMessagePreview alignment if available
+					var latestMsg Message
+					var foundPreview bool
+					if chat.LastMessagePreview != nil {
+						for _, mObj := range msg.Messages {
+							if mObj.ID == chat.LastMessagePreview.ID {
+								latestMsg = mObj
+								foundPreview = true
+								break
+							}
+						}
+					}
+
+					// 2. If not found in current messages or preview is nil, fall back to first user message
+					if !foundPreview {
+						latestMsg = msg.Messages[0]
+						for _, msgObj := range msg.Messages {
+							if msgObj.MessageType == "" || msgObj.MessageType == "message" {
+								latestMsg = msgObj
+								break
+							}
+						}
+					}
+
+					newLastID := latestMsg.ID
+					newTime, _ := time.Parse(time.RFC3339Nano, latestMsg.CreatedDateTime)
+
+					old, ok := m.lastMsgID[chat.ID]
+					if !ok {
+						m.lastMsgID[chat.ID] = newLastID
+						m.lastMsgTime[chat.ID] = newTime
+					} else if old != newLastID {
 						m.lastMsgID[chat.ID] = newLastID
 						m.lastMsgTime[chat.ID] = newTime
 						m.promoteChat(chat.ID)
 
 						// If we sent the message, mark it as read immediately.
-						if m.isOwn(msg.Messages[0]) {
+						if m.isOwn(latestMsg) {
 							m.lastReadMsgID[chat.ID] = newLastID
 						}
 					}
@@ -374,48 +439,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.BlurMsg:
 		m.focused = false
 
-	// ── New message in non-selected chat ─────────────────────────────────
-	case MsgNewMessage:
-		prev := m.lastMsgID[msg.ChatID]
-		if prev == msg.Message.ID {
-			break // not actually new
-		}
-		m.lastMsgID[msg.ChatID] = msg.Message.ID
-		newTime, _ := time.Parse(time.RFC3339Nano, msg.Message.CreatedDateTime)
-		m.lastMsgTime[msg.ChatID] = newTime
 
-		// If we sent the message (e.g. from another client), mark it as read.
-		if m.isOwn(msg.Message) {
-			m.lastReadMsgID[msg.ChatID] = msg.Message.ID
-			m.promoteChat(msg.ChatID)
-			m = m.rebuildChatList()
-			break // No notification needed for own messages
-		}
-
-		// Trigger notification.
-		senderName := ""
-		if msg.Message.From != nil && msg.Message.From.User != nil && msg.Message.From.User.DisplayName != nil {
-			senderName = *msg.Message.From.User.DisplayName
-		}
-		m.notify(senderName, msg.Message)
-
-		// Move chat to top.
-		m.promoteChat(msg.ChatID)
-
-		// Restore selection.
-		selectedID := ""
-		if chat := m.app.GetSelectedChat(); chat != nil {
-			selectedID = chat.ID
-		}
-		m = m.rebuildChatList()
-		if selectedID != "" {
-			for i, c := range m.app.Chats {
-				if c.ID == selectedID {
-					m.app.SelectedIndex = i
-					break
-				}
-			}
-		}
 
 	// ── Message send result ───────────────────────────────────────────────
 	case MsgSendDone:
@@ -1440,7 +1464,14 @@ func (m Model) markRead() Model {
 
 	lastID := m.lastMsgID[chat.ID]
 	if lastID == "" && len(m.app.Messages) > 0 {
-		lastID = m.app.Messages[0].ID
+		latestMsg := m.app.Messages[0]
+		for _, msgObj := range m.app.Messages {
+			if msgObj.MessageType == "" || msgObj.MessageType == "message" {
+				latestMsg = msgObj
+				break
+			}
+		}
+		lastID = latestMsg.ID
 	}
 
 	if lastID != "" && m.lastReadMsgID[chat.ID] != lastID {

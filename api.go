@@ -35,13 +35,14 @@ type ChatMember struct {
 
 // Chat represents a Microsoft Teams chat.
 type Chat struct {
-	ID                string       `json:"id"`
-	Topic             *string      `json:"topic,omitempty"`
-	ChatType          string       `json:"chatType"`
-	LastUpdated       *string      `json:"lastUpdatedDateTime,omitempty"`
-	Viewpoint         *ChatViewpoint `json:"viewpoint,omitempty"`
-	Members           []ChatMember `json:"-"` // populated separately
-	CachedDisplayName *string      `json:"-"` // computed, never from API
+	ID                 string         `json:"id"`
+	Topic              *string        `json:"topic,omitempty"`
+	ChatType           string         `json:"chatType"`
+	LastUpdated        *string        `json:"lastUpdatedDateTime,omitempty"`
+	Viewpoint          *ChatViewpoint `json:"viewpoint,omitempty"`
+	LastMessagePreview *Message       `json:"lastMessagePreview,omitempty"`
+	Members            []ChatMember   `json:"-"` // populated separately
+	CachedDisplayName  *string        `json:"-"` // computed, never from API
 }
 
 // ChatViewpoint contains the read state for the current user.
@@ -53,6 +54,7 @@ type ChatViewpoint struct {
 type Message struct {
 	ID              string              `json:"id"`
 	CreatedDateTime string              `json:"createdDateTime"`
+	MessageType     string              `json:"messageType,omitempty"`
 	From            *MessageFrom        `json:"from,omitempty"`
 	Body            *MessageBody        `json:"body,omitempty"`
 	Attachments     []MessageAttachment `json:"attachments,omitempty"`
@@ -519,7 +521,7 @@ func MarkChatAsRead(accessToken, chatID, userID string) {
 // from member lists, computes CachedDisplayName, and returns
 // (chats, detectedCurrentUserName).
 func GetChats(accessToken string) ([]Chat, *string, error) {
-	body, err := graphGet(accessToken, "/me/chats")
+	body, err := graphGet(accessToken, "/me/chats?$expand=lastMessagePreview")
 	if err != nil {
 		return nil, nil, fmt.Errorf("GetChats: %w", err)
 	}

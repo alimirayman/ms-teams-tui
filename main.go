@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
-	"sync"
+
 	"time"
 
 	"github.com/charmbracelet/bubbletea"
@@ -67,20 +67,7 @@ func loadMoreMessagesCmd(clientID, nextLink string, chatIndex int, isSearch bool
 	}
 }
 
-// checkNewMessageCmd fetches the latest message for a non-selected chat.
-func checkNewMessageCmd(clientID, chatID string) tea.Cmd {
-	return func() tea.Msg {
-		token, err := GetValidTokenSilent(clientID)
-		if err != nil {
-			return nil
-		}
-		msgs, _, err := GetMessages(token, chatID, 1)
-		if err != nil || len(msgs) == 0 {
-			return nil
-		}
-		return MsgNewMessage{ChatID: chatID, Message: msgs[0]}
-	}
-}
+
 
 // sendMessageCmd sends a message to a chat in the background.
 func sendMessageCmd(clientID, chatID, content string) tea.Cmd {
@@ -173,74 +160,39 @@ type chatTimestamp struct {
 	latestMsg time.Time
 }
 
-// loadInitialChatOrder concurrently fetches the last message for each chat
-// and returns the chats sorted by most recent message timestamp (descending),
-// along with the last message IDs and timestamps.
-func loadInitialChatOrder(accessToken string, chats []Chat) ([]Chat, map[string]string, map[string]time.Time) {
-	type result struct {
-		index     int
-		latestMsg time.Time
-		lastMsgID string
-	}
-
-	results := make([]result, len(chats))
-	var wg sync.WaitGroup
-
-	for i, c := range chats {
-		wg.Add(1)
-		go func(i int, c Chat) {
-			defer wg.Done()
-			msgs, _, err := GetMessages(accessToken, c.ID, 1)
-			if err != nil || len(msgs) == 0 {
-				// Fallback: use lastUpdatedDateTime.
-				t := time.Time{}
-				if c.LastUpdated != nil {
-					t, _ = time.Parse(time.RFC3339Nano, *c.LastUpdated)
-				}
-				results[i] = result{i, t, ""}
-				return
-			}
-			// API returns newest first; use the first element.
-			latest, _ := time.Parse(time.RFC3339Nano, msgs[0].CreatedDateTime)
-			
-			// If LastUpdated is newer, use it for sorting (e.g. chat renamed, members changed)
-			t := time.Time{}
-			if c.LastUpdated != nil {
-				t, _ = time.Parse(time.RFC3339Nano, *c.LastUpdated)
-			}
-			if t.After(latest) {
-				latest = t
-			}
-
-			results[i] = result{i, latest, msgs[0].ID}
-		}(i, c)
-	}
-	wg.Wait()
-
+// loadInitialChatOrder returns the chats sorted by most recent message timestamp (descending),
+// using the pre-fetched LastMessagePreview field, along with the last message IDs and timestamps.
+func loadInitialChatOrder(chats []Chat) ([]Chat, map[string]string, map[string]time.Time) {
 	lastMsgIDs := make(map[string]string)
 	lastMsgTimes := make(map[string]time.Time)
-	for i, c := range chats {
-		if results[i].lastMsgID != "" {
-			lastMsgIDs[c.ID] = results[i].lastMsgID
-		}
-		if !results[i].latestMsg.IsZero() {
-			lastMsgTimes[c.ID] = results[i].latestMsg
-		}
-	}
 
-	type chatWithResult struct {
+	type chatWithTime struct {
 		chat Chat
-		res  result
+		t    time.Time
 	}
-	combined := make([]chatWithResult, len(chats))
+	combined := make([]chatWithTime, len(chats))
 	for i, c := range chats {
-		combined[i] = chatWithResult{c, results[i]}
+		t := time.Time{}
+		if c.LastMessagePreview != nil {
+			t, _ = time.Parse(time.RFC3339Nano, c.LastMessagePreview.CreatedDateTime)
+			lastMsgIDs[c.ID] = c.LastMessagePreview.ID
+			lastMsgTimes[c.ID] = t
+		}
+		
+		// Fallback/override: if LastUpdated is set and is newer, use it.
+		if c.LastUpdated != nil {
+			lut, _ := time.Parse(time.RFC3339Nano, *c.LastUpdated)
+			if lut.After(t) {
+				t = lut
+			}
+		}
+		combined[i] = chatWithTime{c, t}
 	}
 
 	// Sort by latest message timestamp descending.
 	sort.Slice(combined, func(a, b int) bool {
-		ta := combined[a].res.latestMsg
-		tb := combined[b].res.latestMsg
+		ta := combined[a].t
+		tb := combined[b].t
 		if ta.IsZero() && tb.IsZero() {
 			return false
 		}
@@ -253,11 +205,12 @@ func loadInitialChatOrder(accessToken string, chats []Chat) ([]Chat, map[string]
 		return ta.After(tb)
 	})
 
+	sorted := make([]Chat, len(chats))
 	for i, cw := range combined {
-		chats[i] = cw.chat
+		sorted[i] = cw.chat
 	}
 
-	return chats, lastMsgIDs, lastMsgTimes
+	return sorted, lastMsgIDs, lastMsgTimes
 }
 
 // ---------------------------------------------------------------------------
@@ -297,7 +250,7 @@ func main() {
 	// 5 & 6. Sort chats by most recent message.
 	var lastMsgIDs map[string]string
 	var lastMsgTimes map[string]time.Time
-	chats, lastMsgIDs, lastMsgTimes = loadInitialChatOrder(accessToken, chats)
+	chats, lastMsgIDs, lastMsgTimes = loadInitialChatOrder(chats)
 
 	// 7 & 8. Initialise application state.
 	app := NewApp()

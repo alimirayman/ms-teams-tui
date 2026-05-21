@@ -48,7 +48,7 @@ Go-based terminal UI application for Microsoft Teams. Authenticates via OAuth2 D
   - `isUnread(chat)` compares latest message time with server viewpoint and local read state
   - `markRead()` triggers `MarkChatAsRead` API on focus, selection change, or key press
 - **Focus Tracking**: Terminal focus reporting enabled via `\x1b[?1004h`; `tea.FocusMsg`/`BlurMsg` update `focused` state
-- Background tasks issued as Bubble Tea `Cmd` functions returning typed messages (`MsgChatsLoaded`, `MsgMessagesLoaded`, `MsgNewMessage`, `MsgTick`, `MsgSendDone`)
+- Background tasks issued as Bubble Tea `Cmd` functions returning typed messages (`MsgChatsLoaded`, `MsgMessagesLoaded`, `MsgTick`, `MsgSendDone`)
 - **Search Architecture**:
   - Activated by `/` in normal mode, which opens a beautiful, responsive fullscreen-budgeted modal overlay popup (`SearchPopupMode`) so the main chat view remains completely responsive and lag-free.
   - Pressing `Enter` in the search textinput submits the query, focuses the results navigation list, and triggers background recursive loading of older messages directly into a separate `HistoryMessages` cache (updating `HistoryNextLink`) using an `IsSearch` flag to separate background loads from main chat lists.
@@ -59,9 +59,9 @@ Go-based terminal UI application for Microsoft Teams. Authenticates via OAuth2 D
 
 
 ### Main / Entry Point (`main.go`)
-- Startup: banner → auth → profile → chats → concurrent initial message fetch for sort → sort → init model → run
+- Startup: banner → auth → profile → chats (with expanded last message preview) → sort → init model → run
 - All Bubble Tea commands (async API calls) are defined here
-- Initial chat order computed concurrently in `loadInitialChatOrder()` using `sync.WaitGroup`
+- Initial chat order computed in `loadInitialChatOrder()` using the pre-fetched `LastMessagePreview` field
 
 ---
 
