@@ -784,6 +784,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			// Immediately reload messages after send.
 			if chat := m.app.GetSelectedChat(); chat != nil {
+				m.lastMessageRefresh = time.Now()
 				cmds = append(cmds, loadMessagesCmd(m.clientID, chat.ID, m.app.SelectedIndex))
 			}
 		}
@@ -1011,6 +1012,7 @@ func (m Model) handleNormalModeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		m.app.SnapToBottom = true
 		if chat := m.app.GetSelectedChat(); chat != nil {
 			m = m.markRead()
+			m.lastMessageRefresh = time.Now()
 			return m, loadMessagesCmd(m.clientID, chat.ID, m.app.SelectedIndex)
 		}
 	}
@@ -1980,7 +1982,8 @@ func renderReactions(reactions []MessageReaction) string {
 	}
 
 	// Any other types?
-	for t, count := range counts {
+	var otherTypes []string
+	for t := range counts {
 		found := false
 		for _, known := range types {
 			if t == known {
@@ -1989,12 +1992,18 @@ func renderReactions(reactions []MessageReaction) string {
 			}
 		}
 		if !found {
-			emoji := reactionEmoji(t)
-			if count > 1 {
-				parts = append(parts, fmt.Sprintf("%s %d", emoji, count))
-			} else {
-				parts = append(parts, emoji)
-			}
+			otherTypes = append(otherTypes, t)
+		}
+	}
+	sort.Strings(otherTypes)
+
+	for _, t := range otherTypes {
+		count := counts[t]
+		emoji := reactionEmoji(t)
+		if count > 1 {
+			parts = append(parts, fmt.Sprintf("%s %d", emoji, count))
+		} else {
+			parts = append(parts, emoji)
 		}
 	}
 
@@ -3090,6 +3099,7 @@ func (m Model) handleUserSearchNavigationKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 				m.app.NextLink = ""
 				m.app.SetLoadingMessages(true)
 				m.app.SnapToBottom = true
+				m.lastMessageRefresh = time.Now()
 				return m, loadMessagesCmd(m.clientID, targetID, idx)
 			}
 		}
