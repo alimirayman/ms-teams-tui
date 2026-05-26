@@ -531,7 +531,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	// ── Messages loaded ──────────────────────────────────────────────────
 	case MsgMessagesLoaded:
-		// Discard if the selected chat changed since we issued the load.
+		// Always update the cache for the chat that was loaded, even if the
+		// user has since switched away. This ensures that revisiting the chat
+		// later shows fresh data immediately.
+		// Retrieve the chat ID from the index at the time the load was issued.
+		if msg.ChatIndex >= 0 && msg.ChatIndex < len(m.app.Chats) {
+			loadedChatID := m.app.Chats[msg.ChatIndex].ID
+			if loadedChatID != "" && len(msg.Messages) > 0 {
+				m.app.CachedMessages[loadedChatID] = msg.Messages
+				m.app.CachedNextLink[loadedChatID] = msg.NextLink
+			}
+		}
+		// Discard UI update if the selected chat changed since we issued the load.
 		if msg.ChatIndex != m.app.SelectedIndex {
 			break
 		}
@@ -655,6 +666,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		}
+		// Keep the per-chat message cache in sync for the active chat.
+		if chat := m.app.GetSelectedChat(); chat != nil {
+			if len(m.app.Messages) > 0 {
+				m.app.CachedMessages[chat.ID] = m.app.Messages
+				m.app.CachedNextLink[chat.ID] = m.app.NextLink
+			}
+		}
 		m.updateScroll()
 
 	// ── More messages loaded (pagination) ───────────────────────────────
@@ -707,6 +725,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.app.AppendOlderMessages(msg.Messages, msg.NextLink)
 			m.updateScroll()
+			// Update the per-chat cache with the newly paginated messages.
+			if chat != nil {
+				m.app.CachedMessages[chat.ID] = m.app.Messages
+				m.app.CachedNextLink[chat.ID] = msg.NextLink
+			}
 		}
 
 	case MsgUserSearchDone:
@@ -1012,16 +1035,24 @@ func (m Model) handleNormalModeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 
 	// If chat selection changed, reload messages.
 	if m.app.SelectedIndex != prevIdx {
-		m.app.Messages = nil
-		m.app.NextLink = ""
 		m.app.SearchMode = false
 		m.app.SearchActive = false
 		m.app.SearchQuery = ""
-		m.app.SetLoadingMessages(true)
 		m.app.SnapToBottom = true
 		if chat := m.app.GetSelectedChat(); chat != nil {
 			m = m.markRead()
 			m.lastMessageRefresh = time.Now()
+			// If we have a cached copy of this chat's messages, show it
+			// immediately so the user doesn't see a blank "loading" screen.
+			if cached, ok := m.app.CachedMessages[chat.ID]; ok && len(cached) > 0 {
+				m.app.Messages = cached
+				m.app.NextLink = m.app.CachedNextLink[chat.ID]
+				m.app.SetLoadingMessages(false)
+			} else {
+				m.app.Messages = nil
+				m.app.NextLink = ""
+				m.app.SetLoadingMessages(true)
+			}
 			return m, loadMessagesCmd(m.clientID, chat.ID, m.app.SelectedIndex)
 		}
 	}

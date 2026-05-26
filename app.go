@@ -110,6 +110,8 @@ type App struct {
 	HistoryNextLink      map[string]string
 	HistoryInitialized   map[string]bool
 	SearchStates         map[string]*ChatSearchState
+	CachedMessages       map[string][]Message // per-chat message cache for instant restore on revisit
+	CachedNextLink       map[string]string    // per-chat NextLink cache
 	MainChatScrollOffset int
 	MainChatSnapToBottom bool
 	UserSearchPopupMode      bool
@@ -151,6 +153,8 @@ func NewApp() *App {
 		HistoryNextLink:         make(map[string]string),
 		HistoryInitialized:      make(map[string]bool),
 		SearchStates:            make(map[string]*ChatSearchState),
+		CachedMessages:          make(map[string][]Message),
+		CachedNextLink:          make(map[string]string),
 	}
 }
 
