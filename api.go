@@ -426,33 +426,23 @@ func replaceEmoticons(s string) string {
 // formatMessageBody prepares the payload body for sending or updating a message.
 func formatMessageBody(content string) map[string]any {
 	content = replaceEmoticons(content)
-	// If it's a single line with no indentation, plain text is fine.
-	if !strings.Contains(content, "\n") && !strings.HasPrefix(content, " ") && !strings.HasPrefix(content, "\t") {
+
+	// Detect whether content needs HTML rendering (markdown or multi-line).
+	hasMarkdown := containsMarkdown(content)
+	isMultiLine := strings.Contains(content, "\n")
+	isIndented := strings.HasPrefix(content, " ") || strings.HasPrefix(content, "\t")
+
+	if !hasMarkdown && !isMultiLine && !isIndented {
+		// Plain single-line text — send as-is.
 		return map[string]any{
 			"content": content,
 		}
 	}
 
-	// For multi-line or indented content, use HTML with <p> tags per line.
-	lines := strings.Split(content, "\n")
-	var sb strings.Builder
-	for _, l := range lines {
-		if l == "" {
-			sb.WriteString("<p>&nbsp;</p>")
-			continue
-		}
-		sb.WriteString("<p>")
-		// Handle tabs and spaces
-		l = html.EscapeString(l)
-		l = strings.ReplaceAll(l, "\t", "&nbsp;&nbsp;&nbsp;&nbsp;")
-		l = strings.ReplaceAll(l, "  ", "&nbsp;&nbsp;")
-		sb.WriteString(l)
-		sb.WriteString("</p>")
-	}
-
+	// Convert markdown (and handle multi-line) to Teams-compatible HTML.
 	return map[string]any{
 		"contentType": "html",
-		"content":     sb.String(),
+		"content":     markdownToHTML(content),
 	}
 }
 
@@ -893,10 +883,58 @@ func HTMLToText(htmlContent string, attachments []MessageAttachment) string {
 	var sb strings.Builder
 	var lastChar rune
 	var tagAddedNewline bool
+
+	// ---- existing state ----
 	var inPre bool
 	var inLink bool
 	var currentLinkURL string
 	var linkText strings.Builder
+
+	// ---- NEW: inline formatting state ----
+	inBold := false
+	inItalic := false
+	inStrike := false
+	inCode := false // <code> tag (inline or inside <pre>)
+
+	// ---- NEW: list state ----
+	type listInfo struct {
+		ordered bool
+		counter int
+	}
+	var listStack []listInfo
+
+	// ---- lipgloss styles ----
+	preCodeStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#98C379"))
+	bulletStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#888888"))
+
+	// applyInlineStyles applies the currently active inline text styles.
+	applyInlineStyles := func(text string) string {
+		if inCode && inPre {
+			return preCodeStyle.Render(text)
+		}
+		s := lipgloss.NewStyle()
+		anySet := false
+		if inBold {
+			s = s.Bold(true)
+			anySet = true
+		}
+		if inItalic {
+			s = s.Italic(true)
+			anySet = true
+		}
+		if inStrike {
+			s = s.Strikethrough(true)
+			anySet = true
+		}
+		if inCode {
+			s = s.Foreground(lipgloss.Color("#E5C07B"))
+			anySet = true
+		}
+		if !anySet {
+			return text
+		}
+		return s.Render(text)
+	}
 
 	for {
 		tt := tokenizer.Next()
@@ -913,6 +951,41 @@ func HTMLToText(htmlContent string, attachments []MessageAttachment) string {
 				inPre = true
 			}
 			switch tag {
+			// ---- inline formatting on ----
+			case "b", "strong":
+				inBold = true
+			case "em", "i":
+				inItalic = true
+			case "s", "strike", "del":
+				inStrike = true
+			case "code":
+				inCode = true
+
+			// ---- lists ----
+			case "ul":
+				listStack = append(listStack, listInfo{ordered: false})
+			case "ol":
+				listStack = append(listStack, listInfo{ordered: true})
+			case "li":
+				if lastChar != '\n' && sb.Len() > 0 {
+					sb.WriteRune('\n')
+					lastChar = '\n'
+				}
+				if len(listStack) > 0 {
+					info := &listStack[len(listStack)-1]
+					indent := strings.Repeat("  ", len(listStack)-1)
+					var prefix string
+					if info.ordered {
+						info.counter++
+						prefix = bulletStyle.Render(fmt.Sprintf("%s%d. ", indent, info.counter))
+					} else {
+						prefix = bulletStyle.Render(indent + "• ")
+					}
+					sb.WriteString(prefix)
+					lastChar = ' '
+				}
+				tagAddedNewline = false
+
 			case "img":
 				orangeText := lipgloss.NewStyle().Foreground(lipgloss.Color("#FF8700")).Render("image")
 				content := "🖼️  " + orangeText
@@ -960,8 +1033,8 @@ func HTMLToText(htmlContent string, attachments []MessageAttachment) string {
 				}
 				tagAddedNewline = true
 
-			// Block-level elements that should be silently removed (start tag only).
-			case "p", "div", "li", "pre":
+			// Block-level elements — closing tag emits newline.
+			case "p", "div", "pre":
 				// Do nothing — closing tag will emit newline.
 
 			case "a":
@@ -981,7 +1054,29 @@ func HTMLToText(htmlContent string, attachments []MessageAttachment) string {
 				inPre = false
 			}
 			switch tag {
-			case "p", "div", "li", "pre":
+			// ---- inline formatting off ----
+			case "b", "strong":
+				inBold = false
+			case "em", "i":
+				inItalic = false
+			case "s", "strike", "del":
+				inStrike = false
+			case "code":
+				inCode = false
+
+			// ---- lists ----
+			case "ul", "ol":
+				if len(listStack) > 0 {
+					listStack = listStack[:len(listStack)-1]
+				}
+			case "li":
+				if lastChar != '\n' && sb.Len() > 0 {
+					sb.WriteRune('\n')
+					lastChar = '\n'
+				}
+				tagAddedNewline = true
+
+			case "p", "div", "pre":
 				if lastChar != '\n' && sb.Len() > 0 {
 					sb.WriteRune('\n')
 					lastChar = '\n'
@@ -995,7 +1090,6 @@ func HTMLToText(htmlContent string, attachments []MessageAttachment) string {
 				tagAddedNewline = true
 			case "a":
 				if inLink {
-					// Diagnosis: if the visible text doesn't look like the URL, append it.
 					lt := strings.TrimSpace(linkText.String())
 					if lt != "" && lt != currentLinkURL && !strings.Contains(currentLinkURL, lt) {
 						diag := lipgloss.NewStyle().Foreground(lipgloss.Color("#888888")).Render(" (" + currentLinkURL + ")")
@@ -1026,16 +1120,19 @@ func HTMLToText(htmlContent string, attachments []MessageAttachment) string {
 					continue
 				}
 
+				// Apply inline formatting styles.
+				styledText := applyInlineStyles(text)
+
 				if inLink && currentLinkURL != "" {
 					linkText.WriteString(text)
-					styled := lipgloss.NewStyle().
+					linkStyled := lipgloss.NewStyle().
 						Foreground(lipgloss.Color("#00AFFF")).
 						Underline(true).
-						Render(text)
-					text = fmt.Sprintf("\x1b]8;;%s\x1b\\%s\x1b]8;;\x1b\\", currentLinkURL, styled)
-				} else {
-					// Not in a tag, but might contain plain text URLs.
-					text = urlRegex.ReplaceAllStringFunc(text, func(u string) string {
+						Render(styledText)
+					styledText = fmt.Sprintf("\x1b]8;;%s\x1b\\%s\x1b]8;;\x1b\\", currentLinkURL, linkStyled)
+				} else if !inBold && !inItalic && !inStrike && !inCode {
+					// Plain text: detect and style bare URLs.
+					styledText = urlRegex.ReplaceAllStringFunc(text, func(u string) string {
 						styled := lipgloss.NewStyle().
 							Foreground(lipgloss.Color("#00AFFF")).
 							Underline(true).
@@ -1044,8 +1141,8 @@ func HTMLToText(htmlContent string, attachments []MessageAttachment) string {
 					})
 				}
 
-				sb.WriteString(text)
-				r, _ := utf8.DecodeLastRuneInString(text)
+				sb.WriteString(styledText)
+				r, _ := utf8.DecodeLastRuneInString(styledText)
 				lastChar = r
 			}
 		}

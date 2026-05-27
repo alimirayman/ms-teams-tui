@@ -1195,7 +1195,7 @@ func (m Model) handleMessageSelectionModeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 				m.app.InputMode = true
 				content := ""
 				if msgObj.Body != nil && msgObj.Body.Content != nil {
-					content = stripANSI(HTMLToText(*msgObj.Body.Content, msgObj.Attachments))
+					content = HTMLToMarkdown(*msgObj.Body.Content)
 				}
 				m.textarea.SetValue(content)
 				return m, m.textarea.Focus()

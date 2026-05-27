@@ -10,10 +10,11 @@ Authenticates via **OAuth2 Device Code Flow** (no browser redirect needed), fetc
 
 - 🔐 OAuth2 Device Code Flow — authenticate with your Microsoft account, no browser redirect required
 - 💬 List all your Teams chats (1:1, group, meetings) with computed display names
-- 📨 View messages in any chat with HTML-to-text rendering (images, attachments, emoji)
+- 📨 View messages in any chat with HTML-to-text rendering (images, attachments, emoji, **bold**, *italic*, ~~strikethrough~~, `code`, lists)
 - ❤️ Message Interactions — view and add reactions (Heart, Like, Laugh, etc.) to any message
 - 🔗 Clickable & Extractable URLs — links are clickable in supported terminals and can be extracted/copied via the `u` key
 - ✏️ Message Management — send, edit, and delete messages (includes multi-line support)
+- **✍️ Markdown Formatting** — compose messages with `**bold**`, `*italic*`, ~~`~~strike~~`~~, `` `code` ``, fenced code blocks, and bullet/ordered lists; formatting is sent as rich HTML to all Teams clients and rendered with ANSI styles in the TUI
 - 🔔 Notification modes: None / Console (BEL + visual bell) / System (desktop) / Both
 - 🔄 Background polling — chats and messages refresh automatically every ~3 s
 - 😊 Emoticon Auto-replacement — popular text emoticons (like `:)`, `:D`, `<3`) are automatically converted to Unicode emojis
@@ -142,31 +143,82 @@ On first run (or after token expiry) you will be prompted to visit a URL and ent
 
 ---
 
+## Markdown Formatting
+
+Messages support a subset of markdown that is converted to rich HTML when sent, so recipients on **any Teams client** (Desktop, Web, Mobile) see proper formatting.
+
+### Inline syntax
+
+| Syntax                   | Result     |
+| ------------------------ | ---------- |
+| `**bold**` or `__bold__` | **Bold**   |
+| `*italic*` or `_italic_` | *Italic*   |
+| `~~strikethrough~~`      | ~~Strike~~ |
+| `` `inline code` ``      | `code`     |
+
+### Block syntax
+
+| Syntax                        | Result                  |
+| ----------------------------- | ----------------------- |
+| `* item` or `- item`          | Unordered (bullet) list |
+| `1. item` or `1) item`        | Ordered (numbered) list |
+| ` ``` ` fence on its own line | Multi-line code block   |
+
+**Example:**
+
+````
+**Meeting notes** for *Project X*
+
+* Review PR #42
+* Deploy to staging
+
+```
+fmt.Println("hello")
+```
+````
+
+> **Note:** Language hints (e.g. ` ```go `) are accepted syntax but have no visible effect — Teams strips the `class` attribute from the stored HTML, so the hint is not preserved or displayed.
+
+### Receive side rendering
+
+Incoming messages from all clients are rendered with matching ANSI styles in the TUI:
+
+- Bold, italic, and strikethrough use terminal text attributes
+- Inline `code` is highlighted in amber
+- Code blocks are highlighted in green
+- Bullet and numbered lists show `•` / `1.` prefixes
+
+### Edit round-trip
+
+When you press `e` to edit an existing message the edit box is pre-filled with the **original markdown source** (e.g. `**bold**` rather than stripped plain text), so formatting is preserved after saving.
+
+---
+
 ## Keyboard Controls
 
-| Key          | Action                                               |
-| ------------ | ---------------------------------------------------- |
-| `↑` / `k`    | Move up in chat list                                 |
-| `↓` / `j`    | Move down in chat list                               |
-| `PgUp` / `K` | Scroll messages up                                   |
-| `PgDn` / `J` | Scroll messages down                                 |
-| `/`          | Open search input (in Normal Mode)                   |
-| `Esc`        | Clear active search (in Normal Mode)                 |
-| `f`          | Open user search / chat creation popup               |
-| `i`          | Enter compose mode                                   |
-| `Enter`      | Send message                                         |
-| `Alt+Enter`  | New line in message                                  |
-| `Esc`        | Cancel compose                                       |
-| `n`          | Toggle notification mode                             |
+| Key          | Action                                                    |
+| ------------ | --------------------------------------------------------- |
+| `↑` / `k`    | Move up in chat list                                      |
+| `↓` / `j`    | Move down in chat list                                    |
+| `PgUp` / `K` | Scroll messages up                                        |
+| `PgDn` / `J` | Scroll messages down                                      |
+| `/`          | Open search input (in Normal Mode)                        |
+| `Esc`        | Clear active search (in Normal Mode)                      |
+| `f`          | Open user search / chat creation popup                    |
+| `i`          | Enter compose mode                                        |
+| `Enter`      | Send message                                              |
+| `Alt+Enter`  | New line in message                                       |
+| `Esc`        | Cancel compose                                            |
+| `n`          | Toggle notification mode                                  |
 | `m`          | Enter/Exit **Message Mode** (to select/react/delete/copy) |
-| `r`          | React to selected message (in Message Mode)          |
-| `y`          | Copy (yank) message text (in Message Mode)           |
-| `u`          | Copy (yank) URL from message (in Message Mode)        |
-| `d`          | Delete selected message (in Message Mode)            |
-| `e`          | Edit selected message (in Message Mode)              |
-| `a`          | Answer (reply) to selected message (in Message Mode) |
-| `1-6`        | Send reaction (in Reaction Mode)                     |
-| `q`          | Quit                                                 |
+| `r`          | React to selected message (in Message Mode)               |
+| `y`          | Copy (yank) message text (in Message Mode)                |
+| `u`          | Copy (yank) URL from message (in Message Mode)            |
+| `d`          | Delete selected message (in Message Mode)                 |
+| `e`          | Edit selected message (in Message Mode)                   |
+| `a`          | Answer (reply) to selected message (in Message Mode)      |
+| `1-6`        | Send reaction (in Reaction Mode)                          |
+| `q`          | Quit                                                      |
 
 ---
 
