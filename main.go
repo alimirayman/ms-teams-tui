@@ -208,10 +208,10 @@ func updateMessageCmd(clientID, chatID, messageID, content string) tea.Cmd {
 	return func() tea.Msg {
 		token, err := GetValidTokenSilent(clientID)
 		if err != nil {
-			return MsgSendDone{Err: err}
+			return MsgEditDone{ChatID: chatID, MessageID: messageID, Content: content, Err: err}
 		}
 		err = UpdateMessage(token, chatID, messageID, content)
-		return MsgSendDone{Err: err}
+		return MsgEditDone{ChatID: chatID, MessageID: messageID, Content: content, Err: err}
 	}
 }
 
