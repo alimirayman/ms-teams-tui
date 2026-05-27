@@ -4,6 +4,9 @@
 
 ### Bug Fixes
 
+- **Escape HTML tags in changelog commit bodies** - ([d3db5d4](d3db5d4b48760d6c86527a0707cfd951e235bedf))
+
+
 - **Proper changelog generation** - ([ee09472](ee094724eb5a62ad99de9685d47983c7b4de3ec4))
 
 
@@ -15,6 +18,9 @@
 
 
 ### Miscellaneous Tasks
+
+- **Update CHANGELOG.md for v0.9.2 [skip ci]** - ([51bf712](51bf712f9ec6845f80fc0d0dd33e4bab302bfbed))
+
 
 - **Update CHANGELOG.md for v0.9.0 [skip ci]** - ([da31b06](da31b06a31d99788023d55400276494a75e839a5))
 
@@ -30,31 +36,31 @@
 - **Markdown formatting for send/receive and edit round-trip** - ([b97d410](b97d4100bef463233205a3124dd8bea6204b7ebb))
 
 
-Add markdown-to-HTML conversion on send and HTML-to-styled-terminal
-rendering on receive. Also preserve markdown syntax when editing
-existing messages.
-Send side (markdown.go):
-- New markdownToHTML() converts **bold**, *italic*, ~~strike~~,
-  `inline code`, fenced code blocks, and bullet/ordered lists to
-  Teams-compatible HTML before posting via the Graph API
-- Single-line plain-text messages bypass conversion entirely
-- formatMessageBody() in api.go updated to use markdownToHTML()
-Receive side (api.go - HTMLToText):
-- Track <b>/<strong>, <em>/<i>, <s>/<strike>/<del>, <code> state
-  and apply lipgloss ANSI styles (bold, italic, strikethrough, amber)
-- <pre><code> blocks rendered in green
-- <ul>/<ol>/<li> rendered with • / 1. prefixes (dimmed, indented)
-- Inline styles compose correctly with existing link/URL rendering
-Edit round-trip (markdown.go - HTMLToMarkdown):
-- New HTMLToMarkdown() converts stored HTML back to markdown syntax
-  when 'e' is pressed, so bold/italic/code/lists are preserved in
-  the edit textarea rather than being stripped to plain text
-- <code> content is buffered and emitted as a fenced block if
-  multi-line, inline backtick if single-line (handles Teams stripping
-  <pre> wrappers from the stored HTML)
-- Whitespace-only paragraphs (both &nbsp; and plain space variants)
-  are treated as blank-line placeholders with correct blank-line
-  preservation around code blocks
+> Add markdown-to-HTML conversion on send and HTML-to-styled-terminal
+> rendering on receive. Also preserve markdown syntax when editing
+> existing messages.
+> Send side (markdown.go):
+> - New markdownToHTML() converts **bold**, *italic*, ~~strike~~,
+>   `inline code`, fenced code blocks, and bullet/ordered lists to
+>   Teams-compatible HTML before posting via the Graph API
+> - Single-line plain-text messages bypass conversion entirely
+> - formatMessageBody() in api.go updated to use markdownToHTML()
+> Receive side (api.go - HTMLToText):
+> - Track &lt;b>/&lt;strong>, &lt;em>/&lt;i>, &lt;s>/&lt;strike>/&lt;del>, &lt;code> state
+>   and apply lipgloss ANSI styles (bold, italic, strikethrough, amber)
+> - &lt;pre>&lt;code> blocks rendered in green
+> - &lt;ul>/&lt;ol>/&lt;li> rendered with • / 1. prefixes (dimmed, indented)
+> - Inline styles compose correctly with existing link/URL rendering
+> Edit round-trip (markdown.go - HTMLToMarkdown):
+> - New HTMLToMarkdown() converts stored HTML back to markdown syntax
+>   when 'e' is pressed, so bold/italic/code/lists are preserved in
+>   the edit textarea rather than being stripped to plain text
+> - &lt;code> content is buffered and emitted as a fenced block if
+>   multi-line, inline backtick if single-line (handles Teams stripping
+>   &lt;pre> wrappers from the stored HTML)
+> - Whitespace-only paragraphs (both &nbsp; and plain space variants)
+>   are treated as blank-line placeholders with correct blank-line
+>   preservation around code blocks
 
 
 - **Cache messages per chat to eliminate reload flash on revisit** - ([6f756a0](6f756a05ea1262c64ea078de28f4874d23b71ed2))
@@ -95,16 +101,16 @@ Edit round-trip (markdown.go - HTMLToMarkdown):
 - **Improve chat read tracking, notification logic, and reload stability** - ([b3c7ab1](b3c7ab1b2299c1650bacc76e3e48e68183ce3af7))
 
 
-- Set default HTTP client timeout to 15s to prevent hanging background
-requests.
-- Avoid returning nil from background chat loaders on token refresh/API
-error; fallback to existing chat states instead.
-- Refine unread message detection using last message times and a
-1-second threshold to prevent duplicate notification triggers.
-- Mark the active chat as read on the server when updates arrive and the
-terminal is focused.
-- Ensure proper tracking of `LastUpdated` times in initial chat
-ordering.
+> - Set default HTTP client timeout to 15s to prevent hanging background
+> requests.
+> - Avoid returning nil from background chat loaders on token refresh/API
+> error; fallback to existing chat states instead.
+> - Refine unread message detection using last message times and a
+> 1-second threshold to prevent duplicate notification triggers.
+> - Mark the active chat as read on the server when updates arrive and the
+> terminal is focused.
+> - Ensure proper tracking of `LastUpdated` times in initial chat
+> ordering.
 
 
 - **Reactions order** - ([cd334a9](cd334a9d1edd2a097511d0cb5d01f0af68b1d9b9))
@@ -140,15 +146,15 @@ ordering.
 - **Setup GitHub Actions for testing, releases, and changelogs** - ([81fea23](81fea23cb8b520a80a4dab50ae91fd87785c949c))
 
 
-- Add test workflow (`test.yml`) to run Go tests automatically on pushes
-and PRs to main
-- Add release workflow (`release.yml`) to build multi-platform binaries
-(Linux, macOS, Windows) and publish GitHub Releases automatically when
-pushing version tags (`v*`)
-- Introduce `cliff.toml` to automate conventional changelog generation
-via `git-cliff`, formatting commit bodies using native Markdown newlines
-- Inject dynamic release versions into the binary during the CI build
-process and print the version in the application's startup banner
+> - Add test workflow (`test.yml`) to run Go tests automatically on pushes
+> and PRs to main
+> - Add release workflow (`release.yml`) to build multi-platform binaries
+> (Linux, macOS, Windows) and publish GitHub Releases automatically when
+> pushing version tags (`v*`)
+> - Introduce `cliff.toml` to automate conventional changelog generation
+> via `git-cliff`, formatting commit bodies using native Markdown newlines
+> - Inject dynamic release versions into the binary during the CI build
+> process and print the version in the application's startup banner
 
 
 
