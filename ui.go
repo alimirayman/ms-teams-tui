@@ -77,6 +77,14 @@ type MsgTick struct{}
 // MsgSendDone signals that a message send attempt has completed.
 type MsgSendDone struct{ Err error }
 
+// MsgEditDone signals that a message edit (PATCH) has completed.
+type MsgEditDone struct {
+	ChatID    string
+	MessageID string
+	Content   string // the markdown content the user typed (used to derive HTML)
+	Err       error
+}
+
 // MsgUserSearchDone is sent when the directory search completes.
 type MsgUserSearchDone struct {
 	Users []User
@@ -161,6 +169,12 @@ type Model struct {
 
 	// Track application focus.
 	focused bool
+
+	// pendingEdits holds optimistic in-memory edits (messageID → HTML content)
+	// that have been PATCHed to the API but may not yet be reflected in GET
+	// responses (Graph API has eventual consistency after PATCH). Entries are
+	// cleared once the API echoes back the updated content.
+	pendingEdits map[string]string
 }
 
 // NewModel creates the initial Bubble Tea model.
@@ -193,6 +207,7 @@ func NewModel(app *App, clientID, userID string) Model {
 		lastReadReactions:    make(map[string]map[string]bool),
 		reactionsInitialized: make(map[string]bool),
 		notifiedReactions:    make(map[string]map[string]bool),
+		pendingEdits:         make(map[string]string),
 		focused:              true,
 	}
 }
@@ -538,7 +553,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.ChatIndex >= 0 && msg.ChatIndex < len(m.app.Chats) {
 			loadedChatID := m.app.Chats[msg.ChatIndex].ID
 			if loadedChatID != "" && len(msg.Messages) > 0 {
-				m.app.CachedMessages[loadedChatID] = msg.Messages
+				// Merge into the existing cache rather than overwriting it.
+				// A blind overwrite would discard older pages that were already
+				// loaded via pagination, and would also wipe pending edit patches.
+				existing := m.app.CachedMessages[loadedChatID]
+				if len(existing) == 0 {
+					m.app.CachedMessages[loadedChatID] = msg.Messages
+				} else {
+					// Update/add only the messages present in the new batch.
+					idxMap := make(map[string]int, len(existing))
+					for i, em := range existing {
+						idxMap[em.ID] = i
+					}
+					for _, nm := range msg.Messages {
+						if idx, ok := idxMap[nm.ID]; ok {
+							existing[idx] = nm
+						} else {
+							existing = append(existing, nm)
+						}
+					}
+					m.app.CachedMessages[loadedChatID] = existing
+				}
 				m.app.CachedNextLink[loadedChatID] = msg.NextLink
 			}
 		}
@@ -552,6 +587,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !messagesEqual(prev, msg.Messages) {
 			isNewMessage := len(prev) == 0 || (len(msg.Messages) > 0 && prev[0].ID != msg.Messages[0].ID)
 			m.app.SetMessages(msg.Messages, msg.NextLink)
+
+			// Re-apply any pending optimistic edits that the API may not have
+			// reflected yet (Graph API has eventual consistency after PATCH).
+			if chat := m.app.GetSelectedChat(); chat != nil {
+				m.applyPendingEdits(chat.ID)
+			}
 
 			// Detect new reactions in the loaded messages
 			chat := m.app.GetSelectedChat()
@@ -672,6 +713,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.app.CachedMessages[chat.ID] = m.app.Messages
 				m.app.CachedNextLink[chat.ID] = m.app.NextLink
 			}
+		}
+		// Re-apply pending edits to any cache entries that were just updated.
+		if chat := m.app.GetSelectedChat(); chat != nil {
+			m.applyPendingEdits(chat.ID)
 		}
 		m.updateScroll()
 
@@ -819,6 +864,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.lastMessageRefresh = time.Now()
 				cmds = append(cmds, loadMessagesCmd(m.clientID, chat.ID, m.app.SelectedIndex))
 			}
+		}
+
+	// ── Message edit result ───────────────────────────────────────────────
+	case MsgEditDone:
+		if msg.Err != nil {
+			m.app.SetStatus("Edit error: "+msg.Err.Error(), 5*time.Second)
+		} else {
+			// Convert the user's markdown to HTML (same path as formatMessageBody).
+			newHTML := markdownToHTML(msg.Content)
+
+			// Record this as a pending edit. Subsequent MsgMessagesLoaded
+			// handlers will re-apply it after SetMessages, because Graph API
+			// GET may return the old content for several seconds after a PATCH
+			// (eventual consistency). The entry is cleared once the API echoes
+			// back the updated content.
+			m.pendingEdits[msg.MessageID] = newHTML
+
+			// Also patch the live caches immediately so the UI updates now.
+			m.applyPendingEdits(msg.ChatID)
 		}
 
 	// ── Keyboard input ────────────────────────────────────────────────────
@@ -1160,6 +1224,10 @@ func (m Model) handleMessageSelectionModeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	case "k", "up":
 		if m.app.MessageSelectedIndex < len(m.app.Messages)-1 {
 			m.app.MessageSelectedIndex++
+		} else if m.app.NextLink != "" && !m.app.LoadingMessages {
+			// Already at the oldest loaded message — fetch the next page.
+			m.app.SetLoadingMessages(true)
+			return m, loadMoreMessagesCmd(m.clientID, m.app.NextLink, m.app.SelectedIndex, false)
 		}
 
 	case "r":
@@ -3004,6 +3072,44 @@ func (m *Model) notifyReaction(chat Chat, msg *Message, newReactions []MessageRe
 			beeep.AppName = "TeamsTUI"
 			_ = beeep.Notify(title, body, "")
 		}
+	}
+}
+
+// applyPendingEdits patches any in-memory pending edits into the live message
+// caches for the given chat. It also removes entries from pendingEdits once
+// the API has confirmed the updated content (i.e. the slice already contains
+// the new HTML), preventing stale overrides from lingering indefinitely.
+func (m *Model) applyPendingEdits(chatID string) {
+	if len(m.pendingEdits) == 0 {
+		return
+	}
+	patchSlice := func(msgs []Message) {
+		for i := range msgs {
+			newHTML, isPending := m.pendingEdits[msgs[i].ID]
+			if !isPending {
+				continue
+			}
+			// Check if the API has already reflected this edit.
+			if msgs[i].Body != nil && msgs[i].Body.Content != nil && *msgs[i].Body.Content == newHTML {
+				delete(m.pendingEdits, msgs[i].ID)
+				continue
+			}
+			// Overwrite with our optimistic content.
+			if msgs[i].Body == nil {
+				body := MessageBody{Content: &newHTML}
+				msgs[i].Body = &body
+			} else {
+				msgs[i].Body.Content = &newHTML
+			}
+			msgs[i].PlainTextCached = nil // force re-render
+		}
+	}
+	patchSlice(m.app.Messages)
+	if cached, ok := m.app.CachedMessages[chatID]; ok {
+		patchSlice(cached)
+	}
+	if hist, ok := m.app.HistoryMessages[chatID]; ok {
+		patchSlice(hist)
 	}
 }
 
