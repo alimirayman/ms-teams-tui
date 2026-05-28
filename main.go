@@ -389,6 +389,65 @@ func main() {
 	}
 	model.stableChatOrder = stableOrder
 
+	// Load persisted favourites and apply them so favourites appear at the top on launch.
+	model.favourites = LoadFavourites()
+
+	// Fetch any favourited chats that weren't returned by the regular API call
+	// (e.g. chats with very old activity that fell outside chat_limit).
+	// We do this concurrently to keep startup fast.
+	if len(model.favourites) > 0 {
+		loadedIDs := make(map[string]bool, len(chats))
+		for _, c := range chats {
+			loadedIDs[c.ID] = true
+		}
+
+		type fetchResult struct {
+			chat *Chat
+		}
+		missingIDs := make([]string, 0)
+		for id := range model.favourites {
+			if !loadedIDs[id] {
+				missingIDs = append(missingIDs, id)
+			}
+		}
+
+		if len(missingIDs) > 0 {
+			fmt.Printf("⭐ Fetching %d favourited chat(s) not in recent activity...\n", len(missingIDs))
+			ch := make(chan fetchResult, len(missingIDs))
+			for _, id := range missingIDs {
+				go func(chatID string) {
+					c, err := GetChat(accessToken, chatID, currentUserName)
+					if err != nil {
+						ch <- fetchResult{nil}
+						return
+					}
+					ch <- fetchResult{c}
+				}(id)
+			}
+			for range missingIDs {
+				res := <-ch
+				if res.chat == nil {
+					continue
+				}
+				c := *res.chat
+				model.latestChats = append(model.latestChats, c)
+				model.stableChatOrder = append(model.stableChatOrder, c.ID)
+				model.lastReadReactions[c.ID] = make(map[string]bool)
+				model.notifiedReactions[c.ID] = make(map[string]bool)
+				if c.LastMessagePreview != nil {
+					model.lastMsgID[c.ID] = c.LastMessagePreview.ID
+					t, _ := time.Parse(time.RFC3339Nano, c.LastMessagePreview.CreatedDateTime)
+					model.lastMsgTime[c.ID] = t
+					for _, rKey := range model.getReactionKeys(c.LastMessagePreview) {
+						model.lastReadReactions[c.ID][rKey] = true
+					}
+				}
+			}
+		}
+	}
+
+	model = model.rebuildChatList()
+
 	// 9. Start Bubble Tea program.
 	p := tea.NewProgram(model, tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {

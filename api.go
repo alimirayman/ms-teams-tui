@@ -774,6 +774,35 @@ func GetChats(accessToken string, existingChats []Chat, currentUserName *string)
 	return chats, currentUserName, nil
 }
 
+// ---------------------------------------------------------------------------
+// GetChat — fetch a single chat by ID
+// ---------------------------------------------------------------------------
+
+// GetChat fetches a single chat by ID, populates its members, filters the
+// current user, and computes CachedDisplayName. Used to hydrate favourited
+// chats that fall outside the regular chat_limit window.
+func GetChat(accessToken, chatID string, currentUserName *string) (*Chat, error) {
+	body, err := graphGet(accessToken, "/chats/"+chatID+"?$expand=lastMessagePreview")
+	if err != nil {
+		return nil, fmt.Errorf("GetChat: %w", err)
+	}
+	var c Chat
+	if err := json.Unmarshal(body, &c); err != nil {
+		return nil, fmt.Errorf("GetChat: parse: %w", err)
+	}
+
+	// Fetch members (same as GetChats does per-chat).
+	c.Members = GetChatMembers(accessToken, chatID)
+
+	// Filter current user and compute display name.
+	if currentUserName != nil {
+		c.Members = filterMember(c.Members, *currentUserName)
+	}
+	c.CachedDisplayName = new(string)
+	*c.CachedDisplayName = computeDisplayName(&c)
+	return &c, nil
+}
+
 // detectCurrentUser identifies the current user by finding the display name
 // that appears most frequently across oneOnOne chats.
 func detectCurrentUser(chats []Chat) *string {

@@ -175,6 +175,10 @@ type Model struct {
 	// responses (Graph API has eventual consistency after PATCH). Entries are
 	// cleared once the API echoes back the updated content.
 	pendingEdits map[string]string
+
+	// favourites holds chat IDs that have been starred by the user.
+	// Loaded from and persisted to favourites.json in the app config dir.
+	favourites map[string]bool
 }
 
 // NewModel creates the initial Bubble Tea model.
@@ -208,6 +212,7 @@ func NewModel(app *App, clientID, userID string) Model {
 		reactionsInitialized: make(map[string]bool),
 		notifiedReactions:    make(map[string]map[string]bool),
 		pendingEdits:         make(map[string]string),
+		favourites:           make(map[string]bool),
 		focused:              true,
 	}
 }
@@ -1010,7 +1015,7 @@ func (m Model) handleNormalModeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		m.textarea.Reset()
 		return m, m.textarea.Focus()
 
-	case "f":
+	case "c":
 		m.app.UserSearchPopupMode = true
 		m.app.UserSearchMode = true
 		m.app.UserSearchQuery = ""
@@ -1092,6 +1097,28 @@ func (m Model) handleNormalModeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 						m.app.MessageSelectedIndex = i
 						break
 					}
+				}
+			}
+		}
+
+	case "f":
+		// Toggle favourite on the selected chat.
+		if chat := m.app.GetSelectedChat(); chat != nil {
+			if m.favourites[chat.ID] {
+				delete(m.favourites, chat.ID)
+				m.app.SetStatus("★ Removed from favourites: "+*chat.CachedDisplayName, 3*time.Second)
+			} else {
+				m.favourites[chat.ID] = true
+				m.app.SetStatus("★ Added to favourites: "+*chat.CachedDisplayName, 3*time.Second)
+			}
+			// Persist and rebuild the list to reorder immediately.
+			_ = SaveFavourites(m.favourites)
+			m = m.rebuildChatList()
+			// Restore selection to the toggled chat.
+			for i, c := range m.app.Chats {
+				if c.ID == chat.ID {
+					m.app.SelectedIndex = i
+					break
 				}
 			}
 		}
@@ -1601,7 +1628,7 @@ func (m Model) renderRightPanel(w, h int) string {
 
 func (m Model) renderChatList(w, h int) string {
 	title := lipgloss.NewStyle().Foreground(colDimGray).
-		Render("Chats (j/k: nav, f: find, q: quit)")
+		Render("Chats (j/k: nav, c: find, f: ★ fav, q: quit)")
 
 	if len(m.app.Chats) == 0 {
 		return lipgloss.JoinVertical(lipgloss.Left, title, m.app.Status)
@@ -1636,8 +1663,12 @@ func (m Model) renderChatList(w, h int) string {
 
 		unread := m.isUnread(c)
 		reactionEmoji := m.getLatestUnreadReactionEmoji(c)
+		isFav := m.favourites[c.ID]
 
 		prefix := ""
+		if isFav {
+			prefix += "★ "
+		}
 		if unread {
 			prefix += "● "
 		}
@@ -1659,6 +1690,10 @@ func (m Model) renderChatList(w, h int) string {
 		} else {
 			typeTag := lipgloss.NewStyle().Foreground(colCyan).Render("[" + chatType + "]")
 			base := typeTag + " " + displayName
+			if isFav {
+				star := lipgloss.NewStyle().Foreground(colYellow).Render("★ ")
+				base = star + base
+			}
 			if unread || reactionEmoji != "" {
 				pfx := ""
 				if unread {
@@ -1667,7 +1702,7 @@ func (m Model) renderChatList(w, h int) string {
 				if reactionEmoji != "" {
 					pfx += reactionEmoji + " "
 				}
-				base = lipgloss.NewStyle().Bold(true).Render(pfx + base)
+				base = lipgloss.NewStyle().Bold(true).Render(pfx) + base
 			}
 			label = lipgloss.NewStyle().MaxWidth(w).Render(base)
 		}
@@ -2176,7 +2211,13 @@ func reactionEmoji(t string) string {
 // ---------------------------------------------------------------------------
 
 // promoteChat moves chatID to position 0 in the stable order.
+// Favourited chats are anchored at the top by rebuildChatList, so they are
+// skipped here to avoid disrupting the alphabetical favourites group.
 func (m *Model) promoteChat(chatID string) {
+	// Don't promote favourited chats — they stay anchored at the top.
+	if m.favourites[chatID] {
+		return
+	}
 	for i, id := range m.stableChatOrder {
 		if id == chatID {
 			m.stableChatOrder = append([]string{chatID},
@@ -2231,13 +2272,51 @@ func (m Model) rebuildChatList() Model {
 		byID[c.ID] = c
 	}
 
-	ordered := make([]Chat, 0, len(m.stableChatOrder))
+	// Split into favourites and non-favourites.
+	var favChats []Chat
+	var normalChats []Chat
+
+	// Non-favourite chats follow the stable order.
 	for _, id := range m.stableChatOrder {
 		if c, ok := byID[id]; ok {
-			ordered = append(ordered, c)
+			if m.favourites[id] {
+				favChats = append(favChats, c)
+			} else {
+				normalChats = append(normalChats, c)
+			}
 		}
 	}
-	m.app.Chats = ordered
+
+	// Also include favourited chats that are not in stableChatOrder yet
+	// (e.g. chats with old activity not loaded from API this session).
+	knownInOrder := make(map[string]bool, len(m.stableChatOrder))
+	for _, id := range m.stableChatOrder {
+		knownInOrder[id] = true
+	}
+	for id := range m.favourites {
+		if !knownInOrder[id] {
+			if c, ok := byID[id]; ok {
+				favChats = append(favChats, c)
+			}
+			// If the chat data isn't loaded yet, it simply won't appear until
+			// the API returns it. The favourite status is preserved in the file.
+		}
+	}
+
+	// Sort favourites alphabetically by display name.
+	sort.Slice(favChats, func(i, j int) bool {
+		namei := ""
+		namej := ""
+		if favChats[i].CachedDisplayName != nil {
+			namei = *favChats[i].CachedDisplayName
+		}
+		if favChats[j].CachedDisplayName != nil {
+			namej = *favChats[j].CachedDisplayName
+		}
+		return strings.ToLower(namei) < strings.ToLower(namej)
+	})
+
+	m.app.Chats = append(favChats, normalChats...)
 	return m
 }
 

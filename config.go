@@ -5,9 +5,55 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 
 	"github.com/joho/godotenv"
 )
+
+// ---------------------------------------------------------------------------
+// Favourites persistence
+// ---------------------------------------------------------------------------
+
+// LoadFavourites reads the list of favourite chat IDs from favourites.json.
+// Returns an empty map if the file does not exist or cannot be parsed.
+func LoadFavourites() map[string]bool {
+	dir, err := GetAppDir()
+	if err != nil {
+		return make(map[string]bool)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "favourites.json"))
+	if err != nil {
+		return make(map[string]bool)
+	}
+	var ids []string
+	if err := json.Unmarshal(data, &ids); err != nil {
+		return make(map[string]bool)
+	}
+	m := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		m[id] = true
+	}
+	return m
+}
+
+// SaveFavourites writes the current favourite chat IDs to favourites.json.
+func SaveFavourites(favs map[string]bool) error {
+	dir, err := GetAppDir()
+	if err != nil {
+		return err
+	}
+	ids := make([]string, 0, len(favs))
+	for id := range favs {
+		ids = append(ids, id)
+	}
+	// Sort for deterministic output.
+	sort.Strings(ids)
+	data, err := json.MarshalIndent(ids, "", "  ")
+	if err != nil {
+		return fmt.Errorf("could not marshal favourites: %w", err)
+	}
+	return os.WriteFile(filepath.Join(dir, "favourites.json"), data, 0o600)
+}
 
 const appDirName = "teams-tui-go"
 

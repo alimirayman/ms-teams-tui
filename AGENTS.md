@@ -43,6 +43,16 @@ Go-based terminal UI application for Microsoft Teams. Authenticates via OAuth2 D
 - Stable chat ordering maintained in `stableChatOrder []string` (list of chat IDs)
   - Only changes when a new message arrives (chat → position 0) or a brand-new chat is added
   - On every API refresh the display list is **rebuilt** from `stableChatOrder`
+- **Favourites**:
+  - Stored in `Model.favourites map[string]bool` (chat ID set)
+  - Persisted to `~/.config/teams-tui-go/favourites.json` via `LoadFavourites()` / `SaveFavourites()`
+  - Loaded at startup in `main.go` and applied before the first render
+  - Toggled with `f` key in normal mode; status message confirms add/remove
+  - Favourited chats are pinned at the top of the sidebar, sorted **alphabetically by display name**
+  - `rebuildChatList()` splits chats into favourites (sorted by name) + non-favourites (stable order)
+  - `promoteChat()` is a no-op for favourited chats so new messages don't displace them
+  - Favourited chats with old/unloaded activity still show up once their data is in `byID` cache
+  - The `★` icon appears before the chat type tag in the sidebar (yellow for non-selected, inline for selected)
 - **Read Logic**:
   - `lastMsgID` and `lastMsgTime` track latest content
   - `lastReadMsgID` tracks what was read locally in this session
@@ -59,7 +69,7 @@ Go-based terminal UI application for Microsoft Teams. Authenticates via OAuth2 D
   - History cache, query, selected result index, and viewport scroll offsets are fully preserved and persisted *per chat* on close/reopen, avoiding redundant downloads and maintaining independent search states when switching between chats.
   - Main chat viewport offsets and snap-to-bottom values are preserved and restored cleanly when entering and exiting search popup mode.
 - **Chat Search & Open Popup**:
-  - Activated by `f` in normal mode, which opens a fullscreen-budgeted modal overlay popup (`UserSearchPopupMode`).
+  - Activated by `c` in normal mode, which opens a fullscreen-budgeted modal overlay popup (`UserSearchPopupMode`).
   - While typing (`UserSearchMode`), it filters already loaded chats/members on-the-fly and populates `UserSearchLocalResults` under the `[Local Chat]` category.
   - Pressing `Enter` in the input field:
     - If the input contains `@` (looks like an email/UPN), it blurs the input and triggers a background `createChatCmd` calling `POST /chats` with type `oneOnOne` to retrieve/open the chat directly.

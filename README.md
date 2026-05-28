@@ -20,6 +20,7 @@ Authenticates via **OAuth2 Device Code Flow** (no browser redirect needed), fetc
 - 😊 Emoticon Auto-replacement — popular text emoticons (like `:)`, `:D`, `<3`) are automatically converted to Unicode emojis
 - 🔍 Search History — search messages in any chat, recursively loading and indexing all conversation history in the background
 - 🔍 Chat Search & Open — filter locally loaded chats or open/start a 1:1 chat directly by entering a UPN/email (bypassing directory search)
+- ⭐ Favourites — pin any chat to the top of the sidebar with `f`; favourites are sorted alphabetically and stay anchored regardless of activity
 
 - 🔵 Unread Indicators — chats with new messages are marked with a dot (●) and bold text
 - 😊 Reaction Indicators — chats with new reactions from other users are marked with their corresponding emoji (e.g. ❤️, 👍, 😆) and bold text
@@ -204,7 +205,8 @@ When you press `e` to edit an existing message the edit box is pre-filled with t
 | `PgDn` / `J` | Scroll messages down                                      |
 | `/`          | Open search input (in Normal Mode)                        |
 | `Esc`        | Clear active search (in Normal Mode)                      |
-| `f`          | Open user search / chat creation popup                    |
+| `c`          | Open chat search / chat creation popup                    |
+| `f`          | Toggle ★ favourite on selected chat                       |
 | `i`          | Enter compose mode                                        |
 | `Enter`      | Send message                                              |
 | `Alt+Enter`  | New line in message                                       |
@@ -224,11 +226,12 @@ When you press `e` to edit an existing message the edit box is pre-filled with t
 
 ## File Locations
 
-| File                                 | Purpose                        |
-| ------------------------------------ | ------------------------------ |
-| `~/.config/teams-tui-go/config.json` | Client ID, notification mode   |
-| `~/.cache/teams-tui-go/token.json`   | OAuth2 access + refresh tokens |
-| `~/.cache/teams-tui-go/profile.json` | Cached user profile            |
+| File                                          | Purpose                             |
+| --------------------------------------------- | ----------------------------------- |
+| `~/.config/teams-tui-go/config.json`           | Client ID, notification mode, limits |
+| `~/.config/teams-tui-go/favourites.json`       | Pinned/favourite chat IDs           |
+| `~/.cache/teams-tui-go/token.json`             | OAuth2 access + refresh tokens      |
+| `~/.cache/teams-tui-go/profile.json`           | Cached user profile                 |
 
 ---
 
