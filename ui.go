@@ -7,13 +7,13 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/atotto/clipboard"
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"regexp"
-	"github.com/atotto/clipboard"
 	"github.com/gen2brain/beeep"
+	"regexp"
 )
 
 // ---------------------------------------------------------------------------
@@ -68,8 +68,6 @@ type MsgMoreMessagesLoaded struct {
 	NextLink  string
 	IsSearch  bool
 }
-
-
 
 // MsgTick is the heartbeat used for periodic refresh and bell timeout.
 type MsgTick struct{}
@@ -638,7 +636,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				m.reactionsInitialized[chat.ID] = true
 			}
-			
+
 			// Keep history cache in sync with new incoming messages
 			if chat != nil {
 				if hist, ok := m.app.HistoryMessages[chat.ID]; ok && len(hist) > 0 {
@@ -661,7 +659,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 
-			// Only snap to bottom if a new message arrived and the user isn't 
+			// Only snap to bottom if a new message arrived and the user isn't
 			// currently busy selecting/reacting to an older message.
 			if isNewMessage && !m.app.MessageSelectionMode {
 				m.app.SnapToBottom = true
@@ -730,7 +728,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.ChatIndex != m.app.SelectedIndex {
 			break
 		}
-		
+
 		chat := m.app.GetSelectedChat()
 		if chat != nil && msg.IsSearch {
 			m.app.SetSearchLoadingMessages(false)
@@ -856,8 +854,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.BlurMsg:
 		m.focused = false
-
-
 
 	// ── Message send result ───────────────────────────────────────────────
 	case MsgSendDone:
@@ -1527,7 +1523,7 @@ func (m Model) View() string {
 	}
 
 	chatPanel := m.renderChatList(chatW-2, innerH)
-	
+
 	right := m.renderRightPanel(msgW-2, innerH)
 
 	left := normalBorder.Width(chatW - 2).Height(innerH).Render(chatPanel)
@@ -1658,9 +1654,9 @@ func (m Model) renderRightPanel(w, h int) string {
 				sender = "Me"
 			}
 		}
-		bar     := lipgloss.NewStyle().Foreground(lipgloss.Color("#4A90D9")).Bold(true).Render("▎")
-		name    := lipgloss.NewStyle().Foreground(lipgloss.Color("#7EC8E3")).Bold(true).Render(sender)
-		text    := lipgloss.NewStyle().Foreground(lipgloss.Color("#6C7A89")).Render(": " + preview)
+		bar := lipgloss.NewStyle().Foreground(lipgloss.Color("#4A90D9")).Bold(true).Render("▎")
+		name := lipgloss.NewStyle().Foreground(lipgloss.Color("#7EC8E3")).Bold(true).Render(sender)
+		text := lipgloss.NewStyle().Foreground(lipgloss.Color("#6C7A89")).Render(": " + preview)
 		quoteLine := bar + " " + name + text
 		inputParts = append(inputParts, quoteLine)
 		// Separator between quote and textarea.
@@ -1703,7 +1699,7 @@ func (m Model) renderChatList(w, h int) string {
 	}
 
 	lines := []string{title}
-	
+
 	start := m.app.ChatScrollOffset
 	end := start + visibleCount
 	if end > len(m.app.Chats) {
@@ -1946,7 +1942,7 @@ func (m Model) renderMessages(w, h int) string {
 			// "with few line down" -> subtract 3 so the user sees some new context.
 			m.app.ScrollOffset = pendingScrollLine - 3
 			m.app.SnapToBottom = false
-			
+
 			// Clamp again after jump.
 			if m.app.ScrollOffset < 0 {
 				m.app.ScrollOffset = 0
@@ -2146,12 +2142,12 @@ func (m Model) markRead() Model {
 func (m Model) isUnread(c Chat) bool {
 	// If it's the currently selected chat, we consider it read (or about to be).
 	// However, to keep the UI consistent, let's only rely on the IDs.
-	
+
 	lastID, hasLast := m.lastMsgID[c.ID]
 	if !hasLast {
 		return false
 	}
-	
+
 	// Check local read state first.
 	if readID, ok := m.lastReadMsgID[c.ID]; ok && readID == lastID {
 		return false
@@ -2393,7 +2389,7 @@ func (m Model) renderUrlSelection(w, h int) string {
 			prefix = "> "
 			style = style.Foreground(colYellow).Background(colDarkGray)
 		}
-		
+
 		displayURL := u
 		if len(displayURL) > w-10 {
 			displayURL = displayURL[:w-13] + "..."
@@ -2454,26 +2450,26 @@ func (m Model) messageMatches(msg *Message, query string) bool {
 	if query == "" {
 		return true
 	}
-	query = strings.TrimSpace(strings.ToLower(query))
+	normQuery := normalizeString(strings.TrimSpace(strings.ToLower(query)))
 
 	// Check sender
 	if msg.From != nil && msg.From.User != nil && msg.From.User.DisplayName != nil {
-		if strings.Contains(strings.ToLower(*msg.From.User.DisplayName), query) {
+		if strings.Contains(normalizeString(strings.ToLower(*msg.From.User.DisplayName)), normQuery) {
 			return true
 		}
-	} else if strings.Contains("me", query) && m.isOwn(*msg) {
+	} else if strings.Contains("me", normQuery) && m.isOwn(*msg) {
 		return true
 	}
 
 	// Check body
 	text := msg.GetPlainText()
-	if strings.Contains(strings.ToLower(text), query) {
+	if strings.Contains(normalizeString(strings.ToLower(text)), normQuery) {
 		return true
 	}
 
 	// Check attachments
 	for _, att := range msg.Attachments {
-		if att.Name != nil && strings.Contains(strings.ToLower(*att.Name), query) {
+		if att.Name != nil && strings.Contains(normalizeString(strings.ToLower(*att.Name)), normQuery) {
 			return true
 		}
 	}
@@ -2488,8 +2484,8 @@ func highlightQuery(text, query string) string {
 		return text
 	}
 
-	lowerText := strings.ToLower(text)
-	lowerQuery := strings.ToLower(query)
+	lowerText := normalizeString(strings.ToLower(text))
+	lowerQuery := normalizeString(strings.ToLower(query))
 	if !strings.Contains(lowerText, lowerQuery) {
 		return text
 	}
@@ -2543,21 +2539,47 @@ func highlightQuery(text, query string) string {
 	}
 
 	plainStr := plainText.String()
-	plainLower := strings.ToLower(plainStr)
+	plainRunes := []rune(plainStr)
+	var plainNormRunes []rune
+	// plainNormToOriginalRuneIdx maps the index in plainNormRunes to the index in plainRunes
+	plainNormToOriginalRuneIdx := make([]int, 0, len(plainRunes))
+
+	for origRuneIdx, r := range plainRunes {
+		normStr := normalizeString(string(r))
+		for _, normRune := range normStr {
+			plainNormRunes = append(plainNormRunes, normRune)
+			plainNormToOriginalRuneIdx = append(plainNormToOriginalRuneIdx, origRuneIdx)
+		}
+	}
+
+	plainLowerNormRunes := []rune(strings.ToLower(string(plainNormRunes)))
+	queryNormRunes := []rune(normalizeString(strings.ToLower(query)))
 
 	var matches [][]int
-	lastIdx := 0
-	for {
-		idx := strings.Index(plainLower[lastIdx:], lowerQuery)
-		if idx == -1 {
-			break
-		}
-		startRuneIdx := utf8.RuneCountInString(plainStr[:lastIdx+idx])
-		queryRuneLen := utf8.RuneCountInString(query)
-		endRuneIdx := startRuneIdx + queryRuneLen
+	if len(queryNormRunes) > 0 {
+		for i := 0; i <= len(plainLowerNormRunes)-len(queryNormRunes); i++ {
+			match := true
+			for j := 0; j < len(queryNormRunes); j++ {
+				if plainLowerNormRunes[i+j] != queryNormRunes[j] {
+					match = false
+					break
+				}
+			}
+			if match {
+				startNormIdx := i
+				endNormIdx := i + len(queryNormRunes)
 
-		matches = append(matches, []int{startRuneIdx, endRuneIdx})
-		lastIdx = lastIdx + idx + len(query)
+				startRuneIdx := plainNormToOriginalRuneIdx[startNormIdx]
+				endRuneIdx := len(plainRunes)
+				if endNormIdx < len(plainNormToOriginalRuneIdx) {
+					endRuneIdx = plainNormToOriginalRuneIdx[endNormIdx]
+				}
+
+				matches = append(matches, []int{startRuneIdx, endRuneIdx})
+				// Advance index to avoid overlapping matches
+				i += len(queryNormRunes) - 1
+			}
+		}
 	}
 
 	if len(matches) == 0 {
@@ -2784,7 +2806,7 @@ func (m Model) renderSearchPopup(w, h int) string {
 				}
 				bodyLines := wordWrap(body, bodyW)
 				hSum += len(bodyLines) + 1 // body lines + 1 header line
-				
+
 				// Add gap indicator height if applicable
 				if i > 0 {
 					prevItem := results[i-1]
@@ -2870,7 +2892,7 @@ func (m Model) renderSearchPopup(w, h int) string {
 				bodyW = 10
 			}
 			bodyLines := wordWrap(body, bodyW)
-			
+
 			var itemLines []string
 			itemLines = append(itemLines, header)
 			for _, bl := range bodyLines {
@@ -2906,12 +2928,12 @@ func (m Model) renderSearchPopup(w, h int) string {
 
 	m.searchInput.Width = w - 10
 	tiView := m.searchInput.View()
-	
+
 	borderCol := colYellow
 	if !m.app.SearchMode {
 		borderCol = colDimGray
 	}
-	
+
 	inputBox := lipgloss.NewStyle().
 		BorderStyle(lipgloss.RoundedBorder()).
 		BorderForeground(borderCol).
@@ -2999,7 +3021,7 @@ func (m Model) handleSearchPopupNavigationKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 				if state.ExpandedIndices == nil {
 					state.ExpandedIndices = make(map[int]bool)
 				}
-				
+
 				idx := item.HistoryIndex
 				history := m.app.HistoryMessages[chat.ID]
 				for j := 1; j <= 5; j++ {
@@ -3010,7 +3032,7 @@ func (m Model) handleSearchPopupNavigationKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 						state.ExpandedIndices[idx-j] = true
 					}
 				}
-				
+
 				m.RebuildSearchPopupResults()
 				m.app.SetSearchStatus("Expanded context by 5 messages before/after", 3*time.Second)
 				m.saveSearchState()
@@ -3285,6 +3307,7 @@ func mergeHistoryMessages(existing []Message, newMsgs []Message) []Message {
 }
 
 type UserSearchItemType int
+
 const (
 	UserSearchItemLocal UserSearchItemType = iota
 	UserSearchItemDirectory
@@ -3300,7 +3323,7 @@ type UserSearchItem struct {
 
 func (m Model) getUserSearchItems() []UserSearchItem {
 	var items []UserSearchItem
-	
+
 	// Only Local results
 	for i := range m.app.UserSearchLocalResults {
 		items = append(items, UserSearchItem{
@@ -3308,36 +3331,36 @@ func (m Model) getUserSearchItems() []UserSearchItem {
 			LocalChat: &m.app.UserSearchLocalResults[i],
 		})
 	}
-	
+
 	return items
 }
 
 func (m *Model) updateUserSearchLocalResults() {
-	query := strings.ToLower(strings.TrimSpace(m.app.UserSearchQuery))
+	query := normalizeString(strings.ToLower(strings.TrimSpace(m.app.UserSearchQuery)))
 	if query == "" {
 		m.app.UserSearchLocalResults = nil
 		return
 	}
-	
+
 	var matches []Chat
 	for _, c := range m.app.Chats {
 		name := ""
 		if c.CachedDisplayName != nil {
-			name = strings.ToLower(*c.CachedDisplayName)
+			name = normalizeString(strings.ToLower(*c.CachedDisplayName))
 		}
-		
+
 		memberMatch := false
 		for _, mem := range c.Members {
-			if mem.DisplayName != nil && strings.Contains(strings.ToLower(*mem.DisplayName), query) {
+			if mem.DisplayName != nil && strings.Contains(normalizeString(strings.ToLower(*mem.DisplayName)), query) {
 				memberMatch = true
 				break
 			}
-			if mem.Email != nil && strings.Contains(strings.ToLower(*mem.Email), query) {
+			if mem.Email != nil && strings.Contains(normalizeString(strings.ToLower(*mem.Email)), query) {
 				memberMatch = true
 				break
 			}
 		}
-		
+
 		if strings.Contains(name, query) || memberMatch {
 			matches = append(matches, c)
 		}
@@ -3377,7 +3400,7 @@ func (m Model) handleUserSearchInputModeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 
 func (m Model) handleUserSearchNavigationKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	items := m.getUserSearchItems()
-	
+
 	switch msg.String() {
 	case "esc", "q":
 		m.app.UserSearchPopupMode = false
@@ -3405,7 +3428,7 @@ func (m Model) handleUserSearchNavigationKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		if len(items) == 0 || m.app.UserSearchSelectedIndex >= len(items) {
 			return m, nil
 		}
-		
+
 		item := items[m.app.UserSearchSelectedIndex]
 		if item.Type == UserSearchItemLocal {
 			targetID := item.LocalChat.ID
@@ -3429,7 +3452,7 @@ func (m Model) handleUserSearchNavigationKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 			}
 		}
 	}
-	
+
 	return m, nil
 }
 
