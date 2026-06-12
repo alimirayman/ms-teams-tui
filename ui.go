@@ -331,9 +331,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, loadChatsCmd(m.clientID, m.app.Chats, m.app.CurrentUserName))
 		}
 
-		// Periodic message refresh every ~3 s — skip when viewing a channel.
+		// Periodic message refresh every ~3 s — skip when viewing a channel, when unfocused, or in sleep/idle mode.
 		if m.channelSelectedIndex < 0 &&
 			m.app.GetSelectedChat() != nil &&
+			m.focused &&
 			time.Since(m.lastMessageRefresh) >= 3*time.Second {
 			m.lastMessageRefresh = time.Now()
 			chat := m.app.GetSelectedChat()
@@ -912,6 +913,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.FocusMsg:
 		m.focused = true
 		m = m.markRead()
+		// Instantly load messages on focus if a chat or channel is selected.
+		if m.channelSelectedIndex >= 0 {
+			chans := m.allChannels()
+			if m.channelSelectedIndex < len(chans) {
+				entry := chans[m.channelSelectedIndex]
+				m.lastMessageRefresh = time.Now()
+				cmds = append(cmds, loadChannelMessagesCmd(m.clientID, entry.teamID, entry.channelID))
+			}
+		} else if chat := m.app.GetSelectedChat(); chat != nil {
+			m.lastMessageRefresh = time.Now()
+			cmds = append(cmds, loadMessagesCmd(m.clientID, chat.ID, m.app.SelectedIndex))
+		}
 
 	case tea.BlurMsg:
 		m.focused = false
@@ -1190,7 +1203,13 @@ func (m Model) handleNormalModeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		cfg.NotificationMode = &nm
 		_ = SaveConfig(cfg)
 
+	case "?":
+		m.app.HelpPopupMode = true
+
 	case "i":
+		if m.app.SelectedIndex < 0 && m.channelSelectedIndex < 0 {
+			break
+		}
 		m.app.InputMode = true
 		m.app.InputBuffer = ""
 		m.textarea.Reset()
@@ -1210,6 +1229,9 @@ func (m Model) handleNormalModeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		return m, textinput.Blink
 
 	case "/":
+		if m.app.SelectedIndex < 0 && m.channelSelectedIndex < 0 {
+			break
+		}
 		m.app.MainChatScrollOffset = m.app.ScrollOffset
 		m.app.MainChatSnapToBottom = m.app.SnapToBottom
 		m.app.SearchPopupMode = true
@@ -1245,9 +1267,21 @@ func (m Model) handleNormalModeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 			m.app.SearchActive = false
 			m.app.SearchQuery = ""
 			m.app.SetStatus("Highlights cleared.", 3*time.Second)
+		} else {
+			m.app.SelectedIndex = -1
+			m.channelSelectedIndex = -1
+			m.app.SelectedChannelTeamID = ""
+			m.app.SelectedChannelID = ""
+			m.app.Messages = nil
+			m.app.NextLink = ""
+			m.app.SetLoadingMessages(false)
+			m.app.SetStatus("💤 Entered sleep mode. No chat active.", 3*time.Second)
 		}
 
 	case "K", "pgup":
+		if m.app.SelectedIndex < 0 && m.channelSelectedIndex < 0 {
+			break
+		}
 		if m.app.ScrollOffset == 0 && m.app.NextLink != "" && !m.app.LoadingMessages {
 			m.app.SetLoadingMessages(true)
 			return m, loadMoreMessagesCmd(m.clientID, m.app.NextLink, m.app.SelectedIndex, false)
@@ -1259,6 +1293,9 @@ func (m Model) handleNormalModeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		m.app.SnapToBottom = false
 
 	case "J", "pgdown":
+		if m.app.SelectedIndex < 0 && m.channelSelectedIndex < 0 {
+			break
+		}
 		m.app.ScrollOffset += 10
 		if m.app.ScrollOffset >= m.app.MaxScroll {
 			m.app.ScrollOffset = m.app.MaxScroll
@@ -1266,6 +1303,9 @@ func (m Model) handleNormalModeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		}
 
 	case "m":
+		if m.app.SelectedIndex < 0 && m.channelSelectedIndex < 0 {
+			break
+		}
 		if len(m.app.Messages) > 0 {
 			m.app.MessageSelectionMode = true
 			if m.app.SnapToBottom {
@@ -2048,8 +2088,21 @@ func (m Model) View() string {
 
 // renderRightPanel renders the messages panel (with optional input area).
 func (m Model) renderRightPanel(w, h int) string {
+	if m.app.SelectedIndex < 0 && m.channelSelectedIndex < 0 {
+		idleMsg := "💤 Sleep Mode\n\nNo chat selected. Polling is paused.\n\nPress 'j' or 'k' to select a chat\nand resume polling."
+		msgContent := lipgloss.Place(w, h-2, lipgloss.Center, lipgloss.Center,
+			lipgloss.NewStyle().Foreground(colDimGray).Align(lipgloss.Center).Render(idleMsg),
+		)
+		return normalBorder.Width(w).Height(h).
+			BorderForeground(colDimGray).
+			Render(lipgloss.JoinVertical(lipgloss.Left,
+				lipgloss.NewStyle().Foreground(colDimGray).Render("Idle"),
+				msgContent,
+			))
+	}
+
 	if !m.app.InputMode {
-		title := "Messages (i:compose, m:select, K/J:scroll, /:search, ?:help)"
+		title := "Messages (i:compose, m:select, K/J:scroll, /:search, ?:help, ESC:sleep mode)"
 		if m.channelSelectedIndex >= 0 {
 			chans := m.allChannels()
 			if m.channelSelectedIndex < len(chans) {
@@ -2293,15 +2346,20 @@ func (m Model) renderChatList(w, h int) string {
 	}
 
 	// ── Chats section ────────────────────────────────────────────────────
-	if m.app.SelectedIndex < m.app.ChatScrollOffset {
-		m.app.ChatScrollOffset = m.app.SelectedIndex
-	} else if m.app.SelectedIndex >= m.app.ChatScrollOffset+chatBudget {
-		m.app.ChatScrollOffset = m.app.SelectedIndex - chatBudget + 1
+	if m.app.SelectedIndex >= 0 {
+		if m.app.SelectedIndex < m.app.ChatScrollOffset {
+			m.app.ChatScrollOffset = m.app.SelectedIndex
+		} else if m.app.SelectedIndex >= m.app.ChatScrollOffset+chatBudget {
+			m.app.ChatScrollOffset = m.app.SelectedIndex - chatBudget + 1
+		}
 	}
 
 	lines := []string{title}
 
 	start := m.app.ChatScrollOffset
+	if start < 0 {
+		start = 0
+	}
 	end := start + chatBudget
 	if end > len(m.app.Chats) {
 		end = len(m.app.Chats)
@@ -4638,6 +4696,7 @@ func (m Model) renderHelpPopup(w, h int) string {
 			{"/", "Search message history"},
 			{"f", "Toggle favourite (chats only)"},
 			{"n", "Cycle notification mode"},
+			{"ESC", "Enter sleep / idle mode (stop polling)"},
 			{"?", "Show this help"},
 			{"q / Ctrl+C", "Quit"},
 		}},

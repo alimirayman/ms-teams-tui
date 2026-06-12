@@ -17,7 +17,7 @@ Authenticates via **OAuth2 Device Code Flow** (no browser redirect needed), fetc
 - **✍️ Markdown Formatting** — compose messages with `**bold**`, `*italic*`, ~~`~~strike~~`~~, `` `code` ``, fenced code blocks, and bullet/ordered lists; formatting is sent as rich HTML to all Teams clients and rendered with ANSI styles in the TUI
 - 📋 **Clipboard Image Pasting** — paste images from your system clipboard directly into the compose text field using **Ctrl+V** (automatically base64 encoded and sent as inline HTML attachments)
 - 🔔 Notification modes: None / Console (BEL + visual bell) / System (desktop) / Both
-- 🔄 Background polling — chats and messages refresh automatically every ~3 s
+- 🔄 Smart Background Polling & Sleep Mode — active chat messages poll every 3 s and chat list updates every 15 s. Polling auto-pauses when the terminal window is unfocused (blurred) or when you manually enter sleep mode via the `Esc` key.
 - 😊 Emoticon Auto-replacement — popular text emoticons (like `:)`, `:D`, `<3`) are automatically converted to Unicode emojis
 - 🔍 Search History — search messages in any chat, recursively loading and indexing all conversation history in the background
 - 🔍 Chat Search & Open — filter locally loaded chats or open/start a 1:1 chat directly by entering a UPN/email (bypassing directory search)
@@ -277,7 +277,7 @@ When in compose mode (`i`), you can paste images (PNG/JPEG) directly from your s
 | `PgUp` / `K` | Scroll messages up                                        |
 | `PgDn` / `J` | Scroll messages down                                      |
 | `/`          | Open search input (in Normal Mode)                        |
-| `Esc`        | Clear active search (in Normal Mode)                      |
+| `Esc`        | Clear active search, or enter sleep/idle mode (Normal Mode) |
 | `c`          | Open chat search / chat creation popup                    |
 | `f`          | Toggle ★ favourite on selected chat (chats only)          |
 | `i`          | Enter compose mode                                        |
