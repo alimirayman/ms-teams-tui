@@ -1,5 +1,39 @@
 # Changelog
 
+## [1.0.0] - 2026-06-12
+
+### Features
+
+- **Add optional features (Presence, Profiles, Channels, File Downloads, Kitty Image Previews, Clipboard)** - ([f730cad](https://github.com/nospor/teams-tui-go/commit/f730cad576ea44889e2b8a9fa4db222c5fd219a2))
+
+
+> Introduce dynamic, configuration-gated feature flags to request
+> corresponding
+> Microsoft Graph permissions scopes and expose several interactive TUI
+> components:
+> 
+> - **Presence Popup ('p')**: View real-time availability and activity
+> statuses.
+> - **User Profile Popup ('i')**: Display directory contact cards (and
+> extended job/office info).
+> - **Teams & Channels**: Support browsing joined teams and channel
+> message feeds.
+> - **Attachment Viewer**: Navigate ('Tab') and download ('Enter')
+> attachments, with inline image rendering using the Kitty Graphics
+> Protocol.
+> - **Clipboard Pasting**: Pastes images directly from the system
+> clipboard (Linux wl-paste/xclip, macOS, Windows).
+> - **Dynamic Scopes**: Build OAuth2 scopes dynamically at startup based
+> on enabled feature flags in `config.json`.
+
+
+
+### Miscellaneous Tasks
+
+- **Update CHANGELOG.md for v0.9.5 [skip ci]** - ([79388e1](https://github.com/nospor/teams-tui-go/commit/79388e13d168de5ca6108798769b4387fde9c535))
+
+
+
 ## [0.9.5] - 2026-06-03
 
 ### Features
