@@ -17,7 +17,6 @@ import (
 
 	"github.com/charmbracelet/bubbletea"
 	"github.com/nfnt/resize"
-	"golang.org/x/sys/unix"
 )
 
 // isImageAttachment checks if the attachment is an image based on ContentType or file extension.
@@ -89,19 +88,6 @@ func downloadPreviewCmd(clientID, fileURL, destPath string) tea.Cmd {
 		err = DownloadFile(token, fileURL, destPath)
 		return MsgPreviewDownloaded{DestPath: destPath, Err: err}
 	}
-}
-
-// getCellSize queries the terminal to get the exact width and height of a cell in pixels.
-func getCellSize() (int, int) {
-	ws, err := unix.IoctlGetWinsize(int(os.Stdout.Fd()), unix.TIOCGWINSZ)
-	if err == nil && ws.Xpixel > 0 && ws.Ypixel > 0 && ws.Col > 0 && ws.Row > 0 {
-		cellW := int(ws.Xpixel / ws.Col)
-		cellH := int(ws.Ypixel / ws.Row)
-		if cellW > 0 && cellH > 0 {
-			return cellW, cellH
-		}
-	}
-	return 8, 16 // standard fallback estimate
 }
 
 // kittyImageSequence generates the escape sequence to draw a high-quality centered image using Kitty Graphics Protocol.
