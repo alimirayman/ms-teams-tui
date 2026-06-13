@@ -16,6 +16,7 @@ Authenticates via **OAuth2 Device Code Flow** (no browser redirect needed), fetc
 - ✏️ Message Management — send, edit, and delete messages (includes multi-line support)
 - **✍️ Markdown Formatting** — compose messages with `**bold**`, `*italic*`, ~~`~~strike~~`~~, `` `code` ``, fenced code blocks, and bullet/ordered lists; formatting is sent as rich HTML to all Teams clients and rendered with ANSI styles in the TUI
 - 📋 **Clipboard Image Pasting** — paste images from your system clipboard directly into the compose text field using **Ctrl+V** (automatically base64 encoded and sent as inline HTML attachments)
+- 🗣️ **@Mentions & Autocomplete** — mention users in your messages. Typing `@` displays a dropdown list of chat/channel members. Navigate with Up/Down/Tab/Shift+Tab and press Enter to autocomplete the name. Mentions are sent as native Microsoft Teams mentions.
 - 🔔 Notification modes: None / Console (BEL + visual bell) / System (desktop) / Both
 - 🔄 Smart Background Polling & Sleep Mode — active chat messages poll every 3 s and chat list updates every 15 s. Polling auto-pauses when the terminal window is unfocused (blurred) or when you manually enter sleep mode via the `Esc` key.
 - 😊 Emoticon Auto-replacement — popular text emoticons (like `:)`, `:D`, `<3`) are automatically converted to Unicode emojis
@@ -185,7 +186,8 @@ Each feature is disabled by default and requires an additional Graph API permiss
   "presence_enabled": true,
   "user_profile_enabled": true,
   "user_profile_extended": false,
-  "teams_channels_enabled": false
+  "teams_channels_enabled": false,
+  "channel_mentions_enabled": false
 }
 ```
 
@@ -197,6 +199,7 @@ Each feature is disabled by default and requires an additional Graph API permiss
 | `user_profile_enabled` | `false` | `User.ReadBasic.All` | Press `i` in message selection mode to view sender's profile |
 | `user_profile_extended` | `false` | `User.Read.All` *(admin consent)* | Adds job title, department, office to the profile popup (requires `user_profile_enabled: true`) |
 | `teams_channels_enabled` | `false` | `Team.ReadBasic.All` + `Channel.ReadBasic.All` + `ChannelMessage.Read.All` *(admin consent)* + `ChannelMessage.Send` + `ChannelMessage.ReadWrite` | Teams channels appear in the sidebar below chats; navigate with `j`/`k`. Supports background polling, activity sorting, unread dots, and hidden channels (`h` key). |
+| `channel_mentions_enabled` | `false` | `TeamMember.Read.All` | Enables autocomplete suggestion dropdown list of team members in Teams channels when typing `@` mentions. |
 
 See [AZURE_SETUP.md](AZURE_SETUP.md) for full permission setup instructions.
 

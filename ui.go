@@ -142,6 +142,13 @@ type MsgTeamsChannelsLoaded struct {
 	Err   error
 }
 
+// MsgTeamMembersLoaded is sent when team members have been fetched in the background.
+type MsgTeamMembersLoaded struct {
+	TeamID  string
+	Members []ChatMember
+	Err     error
+}
+
 // MsgChannelMessagesLoaded is sent when messages for a Teams channel have been fetched.
 type MsgChannelMessagesLoaded struct {
 	TeamID    string
@@ -1085,6 +1092,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.app.CachedMessages[msg.ChannelID] = msg.Messages
 			m.app.CachedNextLink[msg.ChannelID] = msg.NextLink
 
+			if m.app.Features.ChannelMentions && len(m.app.TeamMembersCache[msg.TeamID]) == 0 {
+				cmds = append(cmds, loadTeamMembersCmd(m.clientID, msg.TeamID))
+			}
+
 			// Check if active channel
 			isActiveChannel := (m.channelSelectedIndex >= 0 &&
 				msg.TeamID == m.app.SelectedChannelTeamID &&
@@ -1150,6 +1161,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
+	case MsgTeamMembersLoaded:
+		if msg.Err == nil {
+			m.app.TeamMembersCache[msg.TeamID] = msg.Members
+		}
+
 	// ── Keyboard input ────────────────────────────────────────────────────
 	case tea.KeyMsg:
 		m = m.markRead()
@@ -1189,6 +1205,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 			m.app.InputBuffer = m.textarea.Value()
+		}
+
+		// Update mention popup state based on the current text and cursor position.
+		val := m.textarea.Value()
+		cursor := getCursorPos(m.textarea)
+		startIdx, query, ok := getMentionQuery(val, cursor)
+		if ok {
+			if !m.app.MentionPopupMode {
+				m.app.MentionScrollOffset = 0
+			}
+			m.app.MentionPopupMode = true
+			m.app.MentionSearch = query
+			m.app.MentionStartIndex = startIdx
+			m = m.rebuildMentionSuggestions()
+		} else {
+			m.app.MentionPopupMode = false
+			m.app.MentionSuggestions = nil
 		}
 	}
 
@@ -1568,6 +1601,77 @@ func (m Model) handleNormalModeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 }
 
 func (m Model) handleInputModeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
+	if m.app.MentionPopupMode {
+		switch msg.String() {
+		case "esc":
+			m.app.MentionPopupMode = false
+			m.app.MentionSuggestions = nil
+			m.app.SkipTextareaUpdate = true
+			return m, nil
+
+		case "up", "shift+tab":
+			if len(m.app.MentionSuggestions) > 0 {
+				m.app.MentionSelectedIndex--
+				if m.app.MentionSelectedIndex < 0 {
+					m.app.MentionSelectedIndex = len(m.app.MentionSuggestions) - 1
+				}
+				// Adjust scroll offset
+				limit := 5
+				if m.app.MentionSelectedIndex < m.app.MentionScrollOffset {
+					m.app.MentionScrollOffset = m.app.MentionSelectedIndex
+				} else if m.app.MentionSelectedIndex >= m.app.MentionScrollOffset+limit {
+					// Handle wrap-around from top to bottom
+					m.app.MentionScrollOffset = m.app.MentionSelectedIndex - limit + 1
+				}
+			}
+			m.app.SkipTextareaUpdate = true
+			return m, nil
+
+		case "down", "tab":
+			if len(m.app.MentionSuggestions) > 0 {
+				m.app.MentionSelectedIndex++
+				if m.app.MentionSelectedIndex >= len(m.app.MentionSuggestions) {
+					m.app.MentionSelectedIndex = 0
+				}
+				// Adjust scroll offset
+				limit := 5
+				if m.app.MentionSelectedIndex >= m.app.MentionScrollOffset+limit {
+					m.app.MentionScrollOffset = m.app.MentionSelectedIndex - limit + 1
+				} else if m.app.MentionSelectedIndex < m.app.MentionScrollOffset {
+					// Handle wrap-around from bottom to top
+					m.app.MentionScrollOffset = 0
+				}
+			}
+			m.app.SkipTextareaUpdate = true
+			return m, nil
+
+		case "enter":
+			if len(m.app.MentionSuggestions) > 0 && m.app.MentionSelectedIndex >= 0 && m.app.MentionSelectedIndex < len(m.app.MentionSuggestions) {
+				selected := m.app.MentionSuggestions[m.app.MentionSelectedIndex]
+				if selected.DisplayName != nil {
+					displayName := *selected.DisplayName
+					val := m.textarea.Value()
+					runes := []rune(val)
+					startIdx := m.app.MentionStartIndex
+					cursor := getCursorPos(m.textarea)
+					if startIdx >= 0 && startIdx < cursor && cursor <= len(runes) {
+						prefix := string(runes[:startIdx])
+						suffix := string(runes[cursor:])
+						newVal := prefix + "@" + displayName + " " + suffix
+						m.textarea.SetValue(newVal)
+						newCursor := startIdx + len([]rune("@"+displayName+" "))
+						m.textarea.SetCursor(newCursor)
+						m.app.InputBuffer = newVal
+					}
+				}
+			}
+			m.app.MentionPopupMode = false
+			m.app.MentionSuggestions = nil
+			m.app.SkipTextareaUpdate = true
+			return m, nil
+		}
+	}
+
 	switch msg.String() {
 	case "esc":
 		m.app.InputMode = false
@@ -1608,34 +1712,39 @@ func (m Model) handleInputModeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 
 		// If we're viewing a Teams channel, send to that channel.
 		if ch := m.activeChannelEntry(); ch != nil {
+			var members []ChatMember
+			if m.app.Features.ChannelMentions {
+				members = m.app.TeamMembersCache[ch.teamID]
+			}
 			if m.app.EditingMessageID != nil {
 				msgID := *m.app.EditingMessageID
 				m.app.EditingMessageID = nil
-				return m, updateChannelMessageCmd(m.clientID, ch.teamID, ch.channelID, msgID, content)
+				return m, updateChannelMessageCmd(m.clientID, ch.teamID, ch.channelID, msgID, content, members)
 			}
 			if m.app.ChannelReplyToID != "" {
 				rootID := m.app.ChannelReplyToID
 				m.app.ChannelReplyToID = ""
-				return m, sendChannelReplyCmd(m.clientID, ch.teamID, ch.channelID, rootID, content, images)
+				return m, sendChannelReplyCmd(m.clientID, ch.teamID, ch.channelID, rootID, content, members, images)
 			}
-			return m, sendChannelMessageCmd(m.clientID, ch.teamID, ch.channelID, content, images)
+			return m, sendChannelMessageCmd(m.clientID, ch.teamID, ch.channelID, content, members, images)
 		}
 
 		chat := m.app.GetSelectedChat()
 		if chat == nil {
 			return m, nil
 		}
+		members := chat.Members
 		if m.app.EditingMessageID != nil {
 			msgID := *m.app.EditingMessageID
 			m.app.EditingMessageID = nil
-			return m, updateMessageCmd(m.clientID, chat.ID, msgID, content)
+			return m, updateMessageCmd(m.clientID, chat.ID, msgID, content, members)
 		}
 		if m.app.ReplyToMessage != nil {
 			ref := m.app.ReplyToMessage
 			m.app.ReplyToMessage = nil
-			return m, sendMessageWithRefCmd(m.clientID, chat.ID, content, ref, images)
+			return m, sendMessageWithRefCmd(m.clientID, chat.ID, content, ref, members, images)
 		}
-		return m, sendMessageCmd(m.clientID, chat.ID, content, images)
+		return m, sendMessageCmd(m.clientID, chat.ID, content, members, images)
 
 	case "alt+enter", "shift+enter", "ctrl+enter":
 		m.textarea.InsertString("\n")
@@ -2301,7 +2410,58 @@ func (m Model) renderRightPanel(w, h int) string {
 	if m.app.ReplyToMessage != nil {
 		inputH = 7
 	}
-	msgH := h - inputH - 1
+
+	mentionH := 0
+	var mentionView string
+	if m.app.MentionPopupMode && len(m.app.MentionSuggestions) > 0 {
+		limit := 5
+		if len(m.app.MentionSuggestions) < limit {
+			limit = len(m.app.MentionSuggestions)
+		}
+		mentionH = limit + 2
+
+		var items []string
+		start := m.app.MentionScrollOffset
+		for i := start; i < start+limit; i++ {
+			if i < 0 || i >= len(m.app.MentionSuggestions) {
+				continue
+			}
+			sug := m.app.MentionSuggestions[i]
+			displayName := ""
+			if sug.DisplayName != nil {
+				displayName = *sug.DisplayName
+			}
+			email := ""
+			if sug.Email != nil {
+				email = *sug.Email
+			}
+
+			line := fmt.Sprintf(" %s", displayName)
+			if email != "" {
+				line += fmt.Sprintf(" (%s)", email)
+			}
+
+			if i == m.app.MentionSelectedIndex {
+				line = lipgloss.NewStyle().
+					Background(lipgloss.Color("#5F87FF")).
+					Foreground(lipgloss.Color("#FFFFFF")).
+					Bold(true).
+					Render(" >" + line)
+			} else {
+				line = lipgloss.NewStyle().Foreground(lipgloss.Color("#E2E2E2")).Render("  " + line)
+			}
+			items = append(items, line)
+		}
+
+		mentionView = lipgloss.NewStyle().
+			BorderStyle(lipgloss.RoundedBorder()).
+			BorderForeground(colYellow).
+			Width(w).
+			Height(limit).
+			Render(lipgloss.JoinVertical(lipgloss.Left, items...))
+	}
+
+	msgH := h - inputH - mentionH - 1
 	if msgH < 1 {
 		msgH = 1
 	}
@@ -2334,7 +2494,7 @@ func (m Model) renderRightPanel(w, h int) string {
 
 	// Build input box contents — add quote preview when replying.
 	hintLine := lipgloss.NewStyle().Foreground(colDimGray).
-		Render("Type your message (Enter to send, Alt+Enter for new line, ESC to cancel, paste IMAGE)")
+		Render("Type your message (Enter to send, Alt+Enter for new line, ESC to cancel, @ to mention, paste IMAGE)")
 	inputParts := []string{hintLine}
 
 	if m.app.ReplyToMessage != nil {
@@ -2374,6 +2534,9 @@ func (m Model) renderRightPanel(w, h int) string {
 		Width(w).Height(inputH - 1).
 		Render(lipgloss.JoinVertical(lipgloss.Left, inputParts...))
 
+	if mentionView != "" {
+		return lipgloss.JoinVertical(lipgloss.Left, msgBox, mentionView, inputBox)
+	}
 	return lipgloss.JoinVertical(lipgloss.Left, msgBox, inputBox)
 }
 
@@ -5027,6 +5190,14 @@ func (m Model) renderHelpPopup(w, h int) string {
 			{"j / k", "Navigate results"},
 			{"ESC", "Close popup"},
 		}},
+		{"Composing Messages", [][2]string{
+			{"Type", "Write message (Alt+Enter for newline)"},
+			{"@", "Open autocomplete mention popup"},
+			{"j / k / Tab", "Navigate suggestions (when mention popup is open)"},
+			{"Enter", "Select suggestion (when open) / Send message"},
+			{"Ctrl+V", "Paste image from clipboard"},
+			{"ESC", "Cancel composing"},
+		}},
 	}
 
 	labelStyle := lipgloss.NewStyle().Foreground(colYellow).Bold(true)
@@ -5333,3 +5504,98 @@ func (m Model) checkAndTriggerPreviewDownload() tea.Cmd {
 	// Download in background
 	return downloadPreviewCmd(m.clientID, *att.ContentURL, cachePath)
 }
+
+// getCursorPos calculates the absolute cursor index in runes inside the textarea's value.
+func getCursorPos(ta textarea.Model) int {
+	lines := strings.Split(ta.Value(), "\n")
+	cursorLine := ta.Line()
+	if cursorLine < 0 || cursorLine >= len(lines) {
+		return len([]rune(ta.Value()))
+	}
+	pos := 0
+	for i := 0; i < cursorLine; i++ {
+		pos += len([]rune(lines[i])) + 1
+	}
+	pos += ta.LineInfo().CharOffset
+	return pos
+}
+
+// getMentionQuery looks backward from the cursor in a string to find an active '@' mention search.
+func getMentionQuery(val string, cursor int) (int, string, bool) {
+	runes := []rune(val)
+	if cursor < 0 || cursor > len(runes) {
+		return -1, "", false
+	}
+	for i := cursor - 1; i >= 0; i-- {
+		r := runes[i]
+		if r == ' ' || r == '\n' || r == '\r' || r == '\t' {
+			break
+		}
+		if r == '@' {
+			query := string(runes[i+1 : cursor])
+			return i, query, true
+		}
+	}
+	return -1, "", false
+}
+
+// rebuildMentionSuggestions filters the list of available members for mentions.
+func (m Model) rebuildMentionSuggestions() Model {
+	var candidates []ChatMember
+
+	if m.channelSelectedIndex >= 0 {
+		if m.app.Features.ChannelMentions {
+			chans := m.allChannels()
+			if m.channelSelectedIndex < len(chans) {
+				teamID := chans[m.channelSelectedIndex].teamID
+				candidates = m.app.TeamMembersCache[teamID]
+			}
+		}
+	} else {
+		chat := m.app.GetSelectedChat()
+		if chat != nil {
+			candidates = chat.Members
+		}
+	}
+
+	var suggestions []ChatMember
+	searchLower := strings.ToLower(m.app.MentionSearch)
+
+	for _, c := range candidates {
+		if c.DisplayName == nil || c.UserID == nil {
+			continue
+		}
+		if m.app.CurrentUserName != nil && *c.DisplayName == *m.app.CurrentUserName {
+			continue
+		}
+
+		name := strings.ToLower(*c.DisplayName)
+		email := ""
+		if c.Email != nil {
+			email = strings.ToLower(*c.Email)
+		}
+
+		if strings.Contains(name, searchLower) || strings.Contains(email, searchLower) {
+			suggestions = append(suggestions, c)
+		}
+	}
+
+	m.app.MentionSuggestions = suggestions
+	if m.app.MentionSelectedIndex >= len(suggestions) {
+		m.app.MentionSelectedIndex = 0
+	}
+	if m.app.MentionSelectedIndex < 0 {
+		m.app.MentionSelectedIndex = 0
+	}
+
+	limit := 5
+	if m.app.MentionScrollOffset+limit > len(suggestions) {
+		m.app.MentionScrollOffset = len(suggestions) - limit
+	}
+	if m.app.MentionScrollOffset < 0 {
+		m.app.MentionScrollOffset = 0
+	}
+
+	return m
+}
+

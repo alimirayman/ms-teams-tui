@@ -123,6 +123,7 @@ type Config struct {
 	UserProfileEnabled    *bool `json:"user_profile_enabled,omitempty"`   // requires User.ReadBasic.All
 	UserProfileExtended   *bool `json:"user_profile_extended,omitempty"`  // requires User.Read.All (admin consent)
 	TeamsChannelsEnabled  *bool `json:"teams_channels_enabled,omitempty"` // requires Team.ReadBasic.All + Channel.ReadBasic.All + ChannelMessage.Read.All + ChannelMessage.Send + ChannelMessage.ReadWrite
+	ChannelMentionsEnabled *bool `json:"channel_mentions_enabled,omitempty"` // requires TeamMember.Read.All to load members for autocomplete in channels
 	ChannelMsgRefreshMin   *int  `json:"channel_msg_refresh_min,omitempty"`
 }
 
@@ -263,6 +264,11 @@ func InitConfig() {
 		cfg.TeamsChannelsEnabled = &v
 		modified = true
 	}
+	if cfg.ChannelMentionsEnabled == nil {
+		v := false
+		cfg.ChannelMentionsEnabled = &v
+		modified = true
+	}
 	if cfg.ChannelMsgRefreshMin == nil {
 		val := 2
 		cfg.ChannelMsgRefreshMin = &val
@@ -401,6 +407,12 @@ func ResolveFeatureTeamsChannels() bool {
 	return cfg != nil && cfg.TeamsChannelsEnabled != nil && *cfg.TeamsChannelsEnabled
 }
 
+// ResolveFeatureChannelMentions returns true when channel mentions (and member autocomplete) are enabled.
+func ResolveFeatureChannelMentions() bool {
+	cfg := LoadConfig()
+	return cfg != nil && cfg.ChannelMentionsEnabled != nil && *cfg.ChannelMentionsEnabled
+}
+
 // BuildScopes constructs the OAuth2 scope string from config feature flags.
 // Basic scopes are always included; additional scopes are appended for enabled features.
 func BuildScopes() string {
@@ -421,6 +433,9 @@ func BuildScopes() string {
 	if ResolveFeatureTeamsChannels() {
 		// base += " Team.ReadBasic.All Channel.ReadBasic.All ChannelMessage.Read.All ChannelMessage.Send ChannelMessage.ReadWrite"
 		base += " Team.ReadBasic.All Channel.ReadBasic.All ChannelMessage.Read.All ChannelMessage.Send"
+	}
+	if ResolveFeatureChannelMentions() {
+		base += " TeamMember.Read.All"
 	}
 	return base
 }

@@ -256,7 +256,7 @@ func TestBuildScopes(t *testing.T) {
 			t.Errorf("basic scope %q missing from %q", required, scopes)
 		}
 	}
-	for _, unexpected := range []string{"Presence.Read.All", "Files.Read", "User.ReadBasic.All", "User.Read.All", "Team.ReadBasic.All"} {
+	for _, unexpected := range []string{"Presence.Read.All", "Files.Read", "User.ReadBasic.All", "User.Read.All", "Team.ReadBasic.All", "TeamMember.Read.All"} {
 		for _, s := range splitScopes(scopes) {
 			if s == unexpected {
 				t.Errorf("unexpected scope %q present when feature is disabled", unexpected)
@@ -287,6 +287,26 @@ func TestBuildScopes(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("Presence.Read.All missing when presence_enabled=true, scopes=%q", scopes2)
+	}
+
+	// Case 3: Enable channel mentions — TeamMember.Read.All should appear.
+	cfg = LoadConfig()
+	channelMentionsOn := true
+	cfg.ChannelMentionsEnabled = &channelMentionsOn
+	if err := SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	scopes3 := BuildScopes()
+	foundMentions := false
+	for _, s := range splitScopes(scopes3) {
+		if s == "TeamMember.Read.All" {
+			foundMentions = true
+			break
+		}
+	}
+	if !foundMentions {
+		t.Errorf("TeamMember.Read.All missing when channel_mentions_enabled=true, scopes=%q", scopes3)
 	}
 	_ = cfgPath
 }

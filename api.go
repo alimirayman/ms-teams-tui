@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	stdhtml "html"
 	"io"
 	"net/http"
 	"net/url"
@@ -411,6 +412,19 @@ func GetChatMembers(accessToken, chatID string) []ChatMember {
 	return r.Value
 }
 
+// GetTeamMembers returns the members of a Team. On error it returns an empty slice.
+func GetTeamMembers(accessToken, teamID string) []ChatMember {
+	body, err := graphGet(accessToken, "/teams/"+teamID+"/members")
+	if err != nil {
+		return nil
+	}
+	var r membersResponse
+	if err := json.Unmarshal(body, &r); err != nil {
+		return nil
+	}
+	return r.Value
+}
+
 // ---------------------------------------------------------------------------
 // GetMessages
 // ---------------------------------------------------------------------------
@@ -519,8 +533,66 @@ func replaceEmoticons(s string) string {
 	return s
 }
 
+// parseMentions scans content for "@DisplayName" patterns corresponding to the members list.
+// It returns the updated HTML content containing <at id="..."> tags and the Graph API mentions payload.
+func parseMentions(content string, members []ChatMember) (string, []map[string]any) {
+	if len(members) == 0 {
+		return content, nil
+	}
+
+	// Sort members by display name length descending to avoid partial matches
+	// (e.g. "@John Smith" matching "@John" first).
+	sortedMembers := make([]ChatMember, len(members))
+	copy(sortedMembers, members)
+	sort.Slice(sortedMembers, func(i, j int) bool {
+		nameI := ""
+		if sortedMembers[i].DisplayName != nil {
+			nameI = *sortedMembers[i].DisplayName
+		}
+		nameJ := ""
+		if sortedMembers[j].DisplayName != nil {
+			nameJ = *sortedMembers[j].DisplayName
+		}
+		return len(nameI) > len(nameJ)
+	})
+
+	var mentions []map[string]any
+	mentionIndex := 0
+
+	for _, m := range sortedMembers {
+		if m.DisplayName == nil || m.UserID == nil {
+			continue
+		}
+		displayName := *m.DisplayName
+		userID := *m.UserID
+		if displayName == "" || userID == "" {
+			continue
+		}
+
+		mentionTag := "@" + displayName
+		if strings.Contains(content, mentionTag) {
+			atTag := fmt.Sprintf(`<at id="%d">%s</at>`, mentionIndex, stdhtml.EscapeString(displayName))
+			content = strings.ReplaceAll(content, mentionTag, atTag)
+
+			mentions = append(mentions, map[string]any{
+				"id":          mentionIndex,
+				"mentionText": displayName,
+				"mentioned": map[string]any{
+					"user": map[string]any{
+						"id":          userID,
+						"displayName": displayName,
+					},
+				},
+			})
+			mentionIndex++
+		}
+	}
+
+	return content, mentions
+}
+
 // formatMessageBody prepares the payload body for sending or updating a message.
-func formatMessageBody(content string) map[string]any {
+func formatMessageBody(content string, members []ChatMember) (map[string]any, []map[string]any) {
 	content = replaceEmoticons(content)
 
 	// Detect whether content needs HTML rendering (markdown or multi-line).
@@ -528,32 +600,54 @@ func formatMessageBody(content string) map[string]any {
 	isMultiLine := strings.Contains(content, "\n")
 	isIndented := strings.HasPrefix(content, " ") || strings.HasPrefix(content, "\t")
 
-	if !hasMarkdown && !isMultiLine && !isIndented {
-		// Plain single-line text — send as-is.
-		return map[string]any{
-			"content": content,
+	hasMentions := false
+	for _, m := range members {
+		if m.DisplayName != nil && *m.DisplayName != "" && m.UserID != nil && *m.UserID != "" {
+			if strings.Contains(content, "@"+*m.DisplayName) {
+				hasMentions = true
+				break
+			}
 		}
 	}
 
+	if !hasMarkdown && !isMultiLine && !isIndented && !hasMentions {
+		// Plain single-line text — send as-is.
+		return map[string]any{
+			"content": content,
+		}, nil
+	}
+
 	// Convert markdown (and handle multi-line) to Teams-compatible HTML.
+	var htmlContent string
+	if hasMarkdown || isMultiLine || isIndented {
+		htmlContent = markdownToHTML(content)
+	} else {
+		htmlContent = stdhtml.EscapeString(content)
+	}
+
+	htmlContent, mentions := parseMentions(htmlContent, members)
+
 	return map[string]any{
 		"contentType": "html",
-		"content":     markdownToHTML(content),
-	}
+		"content":     htmlContent,
+	}, mentions
 }
 
 // formatMessageBodyWithImages prepares the payload body and hosted contents for inline images.
-func formatMessageBodyWithImages(content string, images []PastedImage) (map[string]any, []map[string]any) {
+func formatMessageBodyWithImages(content string, members []ChatMember, images []PastedImage) (map[string]any, []map[string]any, []map[string]any) {
 	if len(images) == 0 {
-		return formatMessageBody(content), nil
+		body, mentions := formatMessageBody(content, members)
+		return body, mentions, nil
 	}
 
 	var htmlContent string
 	if containsMarkdown(content) || strings.Contains(content, "\n") || strings.HasPrefix(content, " ") || strings.HasPrefix(content, "\t") {
 		htmlContent = markdownToHTML(content)
 	} else {
-		htmlContent = "<p>" + html.EscapeString(content) + "</p>"
+		htmlContent = stdhtml.EscapeString(content)
 	}
+
+	htmlContent, mentions := parseMentions(htmlContent, members)
 
 	var hostedContents []map[string]any
 	usedImages := make(map[int]bool)
@@ -590,14 +684,17 @@ func formatMessageBodyWithImages(content string, images []PastedImage) (map[stri
 		"content":     replacedContent,
 	}
 
-	return bodyPayload, hostedContents
+	return bodyPayload, mentions, hostedContents
 }
 
 // SendMessage posts a message to the given chat.
-func SendMessage(accessToken, chatID, content string, images []PastedImage) error {
-	body, hostedContents := formatMessageBodyWithImages(content, images)
+func SendMessage(accessToken, chatID, content string, members []ChatMember, images []PastedImage) error {
+	body, mentions, hostedContents := formatMessageBodyWithImages(content, members, images)
 	payload := map[string]any{
 		"body": body,
+	}
+	if len(mentions) > 0 {
+		payload["mentions"] = mentions
 	}
 	if len(hostedContents) > 0 {
 		payload["hostedContents"] = hostedContents
@@ -607,10 +704,13 @@ func SendMessage(accessToken, chatID, content string, images []PastedImage) erro
 
 // SendChannelMessage posts a new message to a Teams channel.
 // Requires ChannelMessage.Read.All delegated permission.
-func SendChannelMessage(accessToken, teamID, channelID, content string, images []PastedImage) error {
-	body, hostedContents := formatMessageBodyWithImages(content, images)
+func SendChannelMessage(accessToken, teamID, channelID, content string, members []ChatMember, images []PastedImage) error {
+	body, mentions, hostedContents := formatMessageBodyWithImages(content, members, images)
 	payload := map[string]any{
 		"body": body,
+	}
+	if len(mentions) > 0 {
+		payload["mentions"] = mentions
 	}
 	if len(hostedContents) > 0 {
 		payload["hostedContents"] = hostedContents
@@ -621,10 +721,13 @@ func SendChannelMessage(accessToken, teamID, channelID, content string, images [
 // SendChannelReply posts a reply into an existing Teams channel thread.
 // rootMsgID is the ID of the root (top-level) message in the thread.
 // Requires ChannelMessage.Send delegated permission.
-func SendChannelReply(accessToken, teamID, channelID, rootMsgID, content string, images []PastedImage) error {
-	body, hostedContents := formatMessageBodyWithImages(content, images)
+func SendChannelReply(accessToken, teamID, channelID, rootMsgID, content string, members []ChatMember, images []PastedImage) error {
+	body, mentions, hostedContents := formatMessageBodyWithImages(content, members, images)
 	payload := map[string]any{
 		"body": body,
+	}
+	if len(mentions) > 0 {
+		payload["mentions"] = mentions
 	}
 	if len(hostedContents) > 0 {
 		payload["hostedContents"] = hostedContents
@@ -634,9 +737,9 @@ func SendChannelReply(accessToken, teamID, channelID, rootMsgID, content string,
 
 // SendMessageWithReference posts a reply-to-message using a Teams messageReference
 // attachment, making it appear as a proper quoted reply in the Teams client.
-func SendMessageWithReference(accessToken, chatID string, ref *Message, content string, images []PastedImage) error {
+func SendMessageWithReference(accessToken, chatID string, ref *Message, content string, members []ChatMember, images []PastedImage) error {
 	if ref == nil {
-		return SendMessage(accessToken, chatID, content, images)
+		return SendMessage(accessToken, chatID, content, members, images)
 	}
 
 	// Build the sender JSON for the attachment content field.
@@ -679,7 +782,7 @@ func SendMessageWithReference(accessToken, chatID string, ref *Message, content 
 	// The body MUST be HTML and MUST contain <attachment id="..."></attachment> as a
 	// placeholder so Teams knows where to render the quote bubble.
 	marker := fmt.Sprintf(`<attachment id="%s"></attachment>`, ref.ID)
-	body, hostedContents := formatMessageBodyWithImages(content, images)
+	body, mentions, hostedContents := formatMessageBodyWithImages(content, members, images)
 	bodyHTML := marker + "\n" + body["content"].(string)
 
 	payload := map[string]any{
@@ -694,6 +797,9 @@ func SendMessageWithReference(accessToken, chatID string, ref *Message, content 
 				"content":     string(attContentJSON),
 			},
 		},
+	}
+	if len(mentions) > 0 {
+		payload["mentions"] = mentions
 	}
 	if len(hostedContents) > 0 {
 		payload["hostedContents"] = hostedContents
@@ -719,17 +825,25 @@ func stripBasicHTML(s string) string {
 }
 
 // UpdateMessage modifies an existing message in a chat.
-func UpdateMessage(accessToken, chatID, messageID, content string) error {
+func UpdateMessage(accessToken, chatID, messageID, content string, members []ChatMember) error {
+	body, mentions := formatMessageBody(content, members)
 	payload := map[string]any{
-		"body": formatMessageBody(content),
+		"body": body,
+	}
+	if len(mentions) > 0 {
+		payload["mentions"] = mentions
 	}
 	return graphPatch(accessToken, "/chats/"+chatID+"/messages/"+messageID, payload)
 }
 
 // UpdateChannelMessage modifies an existing message in a Teams channel.
-func UpdateChannelMessage(accessToken, teamID, channelID, messageID, content string) error {
+func UpdateChannelMessage(accessToken, teamID, channelID, messageID, content string, members []ChatMember) error {
+	body, mentions := formatMessageBody(content, members)
 	payload := map[string]any{
-		"body": formatMessageBody(content),
+		"body": body,
+	}
+	if len(mentions) > 0 {
+		payload["mentions"] = mentions
 	}
 	return graphPatch(accessToken, fmt.Sprintf("/teams/%s/channels/%s/messages/%s", teamID, channelID, messageID), payload)
 }

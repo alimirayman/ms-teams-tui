@@ -26,11 +26,11 @@ Go-based terminal UI application for Microsoft Teams. Authenticates via OAuth2 D
 ### Configuration (`config.go`)
 - App data: `~/.config/teams-tui-go/` (via `GetAppDir()`)
 - Cache: `~/.cache/teams-tui-go/` (via `GetCacheDir()`)
-- Config struct: `ClientID *string`, `NotificationMode *NotificationMode`, `NotificationShowPreview *bool`, `NotificationPreviewLen *int`, `MessageLimit *int`, `SearchContextLimit *int`, `ChatLimit *int`, `ChatIconTheme *string`, `CustomChatIcons map[string]string`, plus five optional feature flags: `FilePreviewEnabled`, `PresenceEnabled`, `UserProfileEnabled`, `UserProfileExtended`, `TeamsChannelsEnabled`
+- Config struct: `ClientID *string`, `NotificationMode *NotificationMode`, `NotificationShowPreview *bool`, `NotificationPreviewLen *int`, `MessageLimit *int`, `SearchContextLimit *int`, `ChatLimit *int`, `ChatIconTheme *string`, `CustomChatIcons map[string]string`, plus six optional feature flags: `FilePreviewEnabled`, `PresenceEnabled`, `UserProfileEnabled`, `UserProfileExtended`, `TeamsChannelsEnabled`, `ChannelMentionsEnabled`
 - `ResolveClientID()`, `ResolveMessageLimit()`, `ResolveSearchContextLimit()`, and `ResolveChatLimit()` implement the full precedence chain
 - `InitConfig()` is run at application startup to populate any missing configuration keys in `config.json` with their default values and persist them to disk. It defaults `ChatIconTheme` to `"unicode"` and all feature flags to `false`.
 - `BuildScopes()` assembles the OAuth2 scope string dynamically: always includes the four basic scopes (`User.Read Chat.ReadWrite offline_access`) and appends optional scopes for each enabled feature flag.
-- Five `ResolveFeatureXxx()` helpers (one per feature) read the config and return a bool, used by `BuildScopes()` and during startup to populate `App.Features`.
+- Six `ResolveFeatureXxx()` helpers (one per feature) read the config and return a bool, used by `BuildScopes()` and during startup to populate `App.Features`.
 
 ### API Layer (`api.go`)
 - **User Detection**: Identifies the current user by counting name frequency across `oneOnOne` chats
@@ -46,7 +46,7 @@ Go-based terminal UI application for Microsoft Teams. Authenticates via OAuth2 D
 - `NotificationMode` enum is JSON-serialised as a string ("None", "Console", "System", "Both")
 - `CurrentUserName` is used for filtering and message alignment; it is **not displayed in the UI**
 - `FeatureFlags` struct (populated once at startup in `main.go` from `ResolveFeatureXxx()`) exposes booleans for each optional feature. **Always read feature state from `app.Features`** — never call `ResolveFeatureXxx()` inside the Bubble Tea event loop.
-- New optional-feature popup states on `App`: `PresencePopupMode`, `PresenceData`, `PresenceLoading`, `PresenceUserName`; `UserProfilePopupMode`, `UserProfileData`, `UserProfileLoading`; `AttachmentCursorMode`, `AttachmentSelectedIndex`; `TeamsData []TeamWithChannels`, `TeamsDataLoading`, `SelectedChannelTeamID`, `SelectedChannelID`; `HelpPopupMode`.
+- New optional-feature popup / state fields on `App`: `PresencePopupMode`, `PresenceData`, `PresenceLoading`, `PresenceUserName`; `UserProfilePopupMode`, `UserProfileData`, `UserProfileLoading`; `AttachmentCursorMode`, `AttachmentSelectedIndex`; `TeamsData []TeamWithChannels`, `TeamsDataLoading`, `SelectedChannelTeamID`, `SelectedChannelID`; `HelpPopupMode`; `MentionPopupMode`, `MentionSearch`, `MentionSelectedIndex`, `MentionSuggestions`, `MentionStartIndex`, `TeamMembersCache`.
 - **Teams Channels**: `TeamsData` is `[]TeamWithChannels` (loaded once at startup via `loadTeamsChannelsCmd` fired from `Init()`). The sidebar shows a `── Teams ──` divider below chats; `Model.channelSelectedIndex` (-1 = chat mode, ≥0 = channel index into `allChannels()`) drives navigation. Pressing `j` at the last chat enters channel mode; `k` at index 0 exits back to chats. Selecting a channel fires `loadChannelMessagesCmd` and displays messages in the right panel; `MsgChannelMessagesLoaded` populates `app.Messages`. `SelectedChannelTeamID`/`SelectedChannelID` track the active channel (`""` = chat mode).
 
 ### UI (`ui.go`)

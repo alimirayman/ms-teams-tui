@@ -162,6 +162,21 @@ Effect: Teams channels appear in the **main chat list sidebar** below your chats
 
 ---
 
+#### Feature: Channel Mentions & Autocomplete (`channel_mentions_enabled`)
+
+Enable in config:
+```json
+{ "channel_mentions_enabled": true }
+```
+
+Effect: Enables mentioning people inside Teams Channels. Type `@` in a channel message input to show a dropdown list of team members, search/select one, and post the message with a native Teams mention notification.
+
+| Permission | Type | Admin Consent | Purpose |
+|------------|------|---------------|---------|
+| `TeamMember.Read.All` | Delegated | May be required | Retrieve the list of team/channel members for autocomplete suggestions |
+
+---
+
 ## Re-authentication After Enabling Features
 
 When you enable a new feature in `config.json`, the **existing token does not automatically include the new permission**. You must force a fresh sign-in:

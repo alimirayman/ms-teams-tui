@@ -74,6 +74,7 @@ type FeatureFlags struct {
 	UserProfile           bool // requires User.ReadBasic.All (or User.Read.All if Extended)
 	ProfileExtended       bool // requires User.Read.All (admin consent)
 	TeamsChannels         bool // requires Team.ReadBasic.All + Channel.ReadBasic.All
+	ChannelMentions       bool // requires TeamMember.Read.All
 }
 
 // App holds all runtime state for the Teams TUI application.
@@ -168,6 +169,15 @@ type App struct {
 	ChannelMsgRefreshMin  int
 
 
+	// ── Mention Popup Autocomplete ───────────────────────────────────────
+	MentionPopupMode      bool
+	MentionSearch         string
+	MentionSelectedIndex   int
+	MentionScrollOffset    int
+	MentionSuggestions     []ChatMember
+	MentionStartIndex      int
+	TeamMembersCache      map[string][]ChatMember
+
 	// ── Help popup ───────────────────────────────────────────────────────
 	HelpPopupMode bool
 
@@ -206,6 +216,7 @@ func NewApp() *App {
 		SearchStates:            make(map[string]*ChatSearchState),
 		CachedMessages:          make(map[string][]Message),
 		CachedNextLink:          make(map[string]string),
+		TeamMembersCache:        make(map[string][]ChatMember),
 		ChatIconTheme:           "unicode",
 		CustomChatIcons:         make(map[string]string),
 		AppStartTime:            time.Now(),
