@@ -179,7 +179,8 @@ type App struct {
 	TeamMembersCache      map[string][]ChatMember
 
 	// ── Help popup ───────────────────────────────────────────────────────
-	HelpPopupMode bool
+	HelpPopupMode    bool
+	HelpScrollOffset int
 
 	// ── Composed images (pasted from clipboard) ──────────────────────────
 	ComposedImages []PastedImage

@@ -1365,6 +1365,7 @@ func (m Model) handleNormalModeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 
 	case "?":
 		m.app.HelpPopupMode = true
+		m.app.HelpScrollOffset = 0
 
 	case "i":
 		if m.app.SelectedIndex < 0 && m.channelSelectedIndex < 0 {
@@ -5122,21 +5123,10 @@ func (m Model) resolveReactorName(r MessageReaction) string {
 // Help popup
 // ---------------------------------------------------------------------------
 
-func (m Model) handleHelpPopupKey(msg tea.KeyMsg) (Model, tea.Cmd) {
-	switch msg.String() {
-	case "esc", "q", "?", "enter":
-		m.app.HelpPopupMode = false
-	}
-	return m, nil
-}
-
-func (m Model) renderHelpPopup(w, h int) string {
-	innerW := w - 6
-	if innerW < 20 {
-		innerW = 20
-	}
-
-	title := lipgloss.NewStyle().Foreground(colCyan).Bold(true).Render("Keyboard Shortcuts")
+func (m Model) getHelpContentLines() []string {
+	labelStyle := lipgloss.NewStyle().Foreground(colYellow).Bold(true)
+	keyStyle := lipgloss.NewStyle().Foreground(colCyan)
+	dimStyle := lipgloss.NewStyle().Foreground(colDimGray)
 
 	sections := []struct {
 		name  string
@@ -5195,60 +5185,134 @@ func (m Model) renderHelpPopup(w, h int) string {
 			{"@", "Open autocomplete mention popup"},
 			{"j / k / Tab", "Navigate suggestions (when mention popup is open)"},
 			{"Enter", "Select suggestion (when open) / Send message"},
-			{"Ctrl+V", "Paste image from clipboard"},
+			{"Ctrl+v", "Paste image from clipboard"},
 			{"ESC", "Cancel composing"},
 		}},
 	}
 
-	labelStyle := lipgloss.NewStyle().Foreground(colYellow).Bold(true)
-	keyStyle := lipgloss.NewStyle().Foreground(colCyan)
-	dimStyle := lipgloss.NewStyle().Foreground(colDimGray)
-
-	var lines []string
-	lines = append(lines, title, "")
+	var contentLines []string
 
 	// Optional features status
-	var featureLines []string
-	featureLines = append(featureLines, labelStyle.Render("Optional Features:"))
+	contentLines = append(contentLines, labelStyle.Render("Optional Features:"))
 	featureState := func(enabled bool) string {
 		if enabled {
 			return lipgloss.NewStyle().Foreground(colGreen).Render("✓ enabled")
 		}
 		return dimStyle.Render("✗ disabled")
 	}
-	featureLines = append(featureLines,
+	contentLines = append(contentLines,
 		fmt.Sprintf("  file_preview_enabled      %s", featureState(m.app.Features.FilePreview)),
 		fmt.Sprintf("  file_preview_in_terminal  %s", featureState(m.app.Features.FilePreviewInTerminal)),
 		fmt.Sprintf("  presence_enabled          %s", featureState(m.app.Features.Presence)),
 		fmt.Sprintf("  user_profile_enabled      %s", featureState(m.app.Features.UserProfile)),
 		fmt.Sprintf("  teams_channels_enabled    %s", featureState(m.app.Features.TeamsChannels)),
 	)
-	lines = append(lines, featureLines...)
-	lines = append(lines, "")
+	contentLines = append(contentLines, "")
 
 	for _, sec := range sections {
-		lines = append(lines, labelStyle.Render(sec.name))
+		contentLines = append(contentLines, labelStyle.Render(sec.name))
 		for _, bind := range sec.binds {
 			key := keyStyle.Render(fmt.Sprintf("  %-22s", bind[0]))
-			lines = append(lines, key+bind[1])
+			contentLines = append(contentLines, key+bind[1])
 		}
-		lines = append(lines, "")
+		contentLines = append(contentLines, "")
 	}
 
-	footer := dimStyle.Italic(true).Render("Press ESC / q / ? to close")
+	return contentLines
+}
 
-	// Trim or pad to fit
+func (m Model) clampHelpScrollOffset() {
+	popupH := m.height * 85 / 100
+	if popupH < 10 {
+		popupH = 10
+	}
+	innerH := popupH - 4
+	if innerH < 4 {
+		innerH = 4
+	}
+	viewportH := innerH - 3
+	if viewportH < 1 {
+		viewportH = 1
+	}
+
+	totalLines := len(m.getHelpContentLines())
+	maxScroll := totalLines - viewportH
+	if maxScroll < 0 {
+		maxScroll = 0
+	}
+	if m.app.HelpScrollOffset > maxScroll {
+		m.app.HelpScrollOffset = maxScroll
+	}
+	if m.app.HelpScrollOffset < 0 {
+		m.app.HelpScrollOffset = 0
+	}
+}
+
+func (m Model) handleHelpPopupKey(msg tea.KeyMsg) (Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "q", "?", "enter":
+		m.app.HelpPopupMode = false
+	case "j", "down":
+		m.app.HelpScrollOffset++
+		m.clampHelpScrollOffset()
+	case "k", "up":
+		m.app.HelpScrollOffset--
+		m.clampHelpScrollOffset()
+	}
+	return m, nil
+}
+
+func (m Model) renderHelpPopup(w, h int) string {
+	dimStyle := lipgloss.NewStyle().Foreground(colDimGray)
+
+	// Ensure HelpScrollOffset is properly clamped (e.g. if terminal resized)
+	m.clampHelpScrollOffset()
+
 	innerH := h - 4
 	if innerH < 4 {
 		innerH = 4
 	}
-	if len(lines) > innerH-1 {
-		lines = lines[:innerH-1]
-	} else {
-		for len(lines) < innerH-1 {
-			lines = append(lines, "")
-		}
+
+	viewportH := innerH - 3
+	if viewportH < 1 {
+		viewportH = 1
 	}
+
+	contentLines := m.getHelpContentLines()
+	totalContentLines := len(contentLines)
+	maxScroll := totalContentLines - viewportH
+	if maxScroll < 0 {
+		maxScroll = 0
+	}
+
+	var scrollIndicator string
+	if totalContentLines > viewportH {
+		percent := int(float64(m.app.HelpScrollOffset) / float64(maxScroll) * 100)
+		scrollIndicator = fmt.Sprintf(" %s %d%%", dimStyle.Render("• Scroll j/k or ↓/↑ •"), percent)
+	}
+
+	title := lipgloss.NewStyle().Foreground(colCyan).Bold(true).Render("Keyboard Shortcuts") + scrollIndicator
+
+	var visibleContent []string
+	if totalContentLines > 0 {
+		start := m.app.HelpScrollOffset
+		end := start + viewportH
+		if end > totalContentLines {
+			end = totalContentLines
+		}
+		visibleContent = contentLines[start:end]
+	}
+
+	// Pad if visibleContent is less than viewportH
+	for len(visibleContent) < viewportH {
+		visibleContent = append(visibleContent, "")
+	}
+
+	var lines []string
+	lines = append(lines, title, "")
+	lines = append(lines, visibleContent...)
+
+	footer := dimStyle.Italic(true).Render("Press ESC / q / ? to close")
 	lines = append(lines, footer)
 
 	return lipgloss.NewStyle().
