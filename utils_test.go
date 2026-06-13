@@ -171,3 +171,34 @@ func TestExtractAndProcessInlineImages(t *testing.T) {
 	}
 }
 
+func TestHTMLToTextMentions(t *testing.T) {
+	// Force color profile for testing ANSI codes
+	oldProfile := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	defer lipgloss.SetColorProfile(oldProfile)
+
+
+	// Case 1: Mention without '@' prefix
+	html1 := `Hello <at id="0">John Doe</at>!`
+	res1 := HTMLToText(html1, nil)
+	plain1 := stripANSI(res1)
+	expected1 := "Hello @John Doe!"
+	if plain1 != expected1 {
+		t.Errorf("expected %q, got %q", expected1, plain1)
+	}
+	// Check that ANSI styling was applied
+	if !strings.Contains(res1, "\x1b[") {
+		t.Errorf("expected res1 to contain ANSI escape codes, got %q", res1)
+	}
+
+	// Case 2: Mention that already starts with '@'
+	html2 := `Hello <at id="1">@Jane Doe</at>!`
+	res2 := HTMLToText(html2, nil)
+	plain2 := stripANSI(res2)
+	expected2 := "Hello @Jane Doe!"
+	if plain2 != expected2 {
+		t.Errorf("expected %q, got %q", expected2, plain2)
+	}
+}
+
+

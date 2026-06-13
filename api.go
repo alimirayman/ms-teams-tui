@@ -1373,6 +1373,8 @@ func HTMLToText(htmlContent string, attachments []MessageAttachment) string {
 	inItalic := false
 	inStrike := false
 	inCode := false // <code> tag (inline or inside <pre>)
+	inMention := false
+	mentionPrefixAdded := false
 
 	// ---- NEW: list state ----
 	type listInfo struct {
@@ -1408,6 +1410,10 @@ func HTMLToText(htmlContent string, attachments []MessageAttachment) string {
 			s = s.Foreground(lipgloss.Color("#E5C07B"))
 			anySet = true
 		}
+		if inMention {
+			s = s.Foreground(lipgloss.Color("#5F87FF")).Bold(true)
+			anySet = true
+		}
 		if !anySet {
 			return text
 		}
@@ -1438,6 +1444,9 @@ func HTMLToText(htmlContent string, attachments []MessageAttachment) string {
 				inStrike = true
 			case "code":
 				inCode = true
+			case "at":
+				inMention = true
+				mentionPrefixAdded = false
 
 			// ---- lists ----
 			case "ul":
@@ -1570,6 +1579,8 @@ func HTMLToText(htmlContent string, attachments []MessageAttachment) string {
 				inStrike = false
 			case "code":
 				inCode = false
+			case "at":
+				inMention = false
 
 			// ---- lists ----
 			case "ul", "ol":
@@ -1627,6 +1638,13 @@ func HTMLToText(htmlContent string, attachments []MessageAttachment) string {
 					continue
 				}
 
+				if inMention && !mentionPrefixAdded {
+					if !strings.HasPrefix(text, "@") {
+						text = "@" + text
+					}
+					mentionPrefixAdded = true
+				}
+
 				// Apply inline formatting styles.
 				styledText := applyInlineStyles(text)
 
@@ -1637,7 +1655,7 @@ func HTMLToText(htmlContent string, attachments []MessageAttachment) string {
 						Underline(true).
 						Render(styledText)
 					styledText = fmt.Sprintf("\x1b]8;;%s\x1b\\%s\x1b]8;;\x1b\\", currentLinkURL, linkStyled)
-				} else if !inBold && !inItalic && !inStrike && !inCode {
+				} else if !inBold && !inItalic && !inStrike && !inCode && !inMention {
 					// Plain text: detect and style bare URLs.
 					styledText = urlRegex.ReplaceAllStringFunc(text, func(u string) string {
 						styled := lipgloss.NewStyle().
