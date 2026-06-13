@@ -92,6 +92,7 @@ type App struct {
 	ScrollOffset               int
 	MaxScroll                  int
 	ChatScrollOffset           int
+	ChannelScrollOffset        int
 	SnapToBottom               bool
 	MessageSelectedIndex       int
 	MessageSelectionMode       bool

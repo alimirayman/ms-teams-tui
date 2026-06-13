@@ -241,7 +241,6 @@ type Model struct {
 	// channelSelectedIndex is an index into the flat list returned by allChannels().
 	// -1 means focus is in the chat list (default).
 	channelSelectedIndex int
-	channelScrollOffset  int
 }
 
 // NewModel creates the initial Bubble Tea model.
@@ -2555,10 +2554,31 @@ func (m Model) renderChatList(w, h int) string {
 
 	// ── Chats section ────────────────────────────────────────────────────
 	if m.app.SelectedIndex >= 0 {
-		if m.app.SelectedIndex < m.app.ChatScrollOffset {
-			m.app.ChatScrollOffset = m.app.SelectedIndex
-		} else if m.app.SelectedIndex >= m.app.ChatScrollOffset+chatBudget {
-			m.app.ChatScrollOffset = m.app.SelectedIndex - chatBudget + 1
+		padding := 3
+		maxPadding := (chatBudget - 1) / 2
+		if padding > maxPadding {
+			padding = maxPadding
+		}
+		if padding < 0 {
+			padding = 0
+		}
+
+		if m.app.SelectedIndex < m.app.ChatScrollOffset+padding {
+			m.app.ChatScrollOffset = m.app.SelectedIndex - padding
+		} else if m.app.SelectedIndex >= m.app.ChatScrollOffset+chatBudget-padding {
+			m.app.ChatScrollOffset = m.app.SelectedIndex - chatBudget + 1 + padding
+		}
+
+		// Clamp ChatScrollOffset to [0, len(m.app.Chats) - chatBudget]
+		maxOffset := len(m.app.Chats) - chatBudget
+		if maxOffset < 0 {
+			maxOffset = 0
+		}
+		if m.app.ChatScrollOffset > maxOffset {
+			m.app.ChatScrollOffset = maxOffset
+		}
+		if m.app.ChatScrollOffset < 0 {
+			m.app.ChatScrollOffset = 0
 		}
 	}
 
@@ -2648,16 +2668,37 @@ func (m Model) renderChatList(w, h int) string {
 				chanVisible = 1
 			}
 
-			// Clamp channelScrollOffset so the selected entry stays visible.
+			// Clamp ChannelScrollOffset so the selected entry stays visible with padding.
 			if m.channelSelectedIndex >= 0 {
-				if m.channelSelectedIndex < m.channelScrollOffset {
-					m.channelScrollOffset = m.channelSelectedIndex
-				} else if m.channelSelectedIndex >= m.channelScrollOffset+chanVisible {
-					m.channelScrollOffset = m.channelSelectedIndex - chanVisible + 1
+				chanPadding := 3
+				maxChanPadding := (chanVisible - 1) / 2
+				if chanPadding > maxChanPadding {
+					chanPadding = maxChanPadding
+				}
+				if chanPadding < 0 {
+					chanPadding = 0
+				}
+
+				if m.channelSelectedIndex < m.app.ChannelScrollOffset+chanPadding {
+					m.app.ChannelScrollOffset = m.channelSelectedIndex - chanPadding
+				} else if m.channelSelectedIndex >= m.app.ChannelScrollOffset+chanVisible-chanPadding {
+					m.app.ChannelScrollOffset = m.channelSelectedIndex - chanVisible + 1 + chanPadding
+				}
+
+				// Clamp ChannelScrollOffset to [0, len(chans) - chanVisible]
+				maxChanOffset := len(chans) - chanVisible
+				if maxChanOffset < 0 {
+					maxChanOffset = 0
+				}
+				if m.app.ChannelScrollOffset > maxChanOffset {
+					m.app.ChannelScrollOffset = maxChanOffset
+				}
+				if m.app.ChannelScrollOffset < 0 {
+					m.app.ChannelScrollOffset = 0
 				}
 			}
 
-			cStart := m.channelScrollOffset
+			cStart := m.app.ChannelScrollOffset
 			if cStart < 0 {
 				cStart = 0
 			}
