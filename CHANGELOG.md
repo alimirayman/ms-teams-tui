@@ -1,5 +1,34 @@
 # Changelog
 
+## [1.1.0] - 2026-06-16
+
+### Features
+
+- **Add SQLite database message caching** - ([96dc196](https://github.com/nospor/teams-tui-go/commit/96dc196c24e106ad409e38d01b94c32ec47eff52))
+
+
+> - Implements local SQLite database caching under
+> `~/.cache/teams-tui-go/` using a pure-Go SQLite driver.
+> - Adds `sqlite_enabled` optional feature flag in configuration (disabled
+> by default).
+> - Caches and loads chat/channel messages instantly on startup or select,
+> using a write-through background update check.
+> - Caches incoming message notifications immediately to render them
+> instantly when entering the target chat.
+> - Restores chronological ordering and absolute gap-detection logic for
+> the search popup, selecting the latest match closest to today by
+> default.
+> - Prevents search execution freezes on partial queries by querying only
+> on explicit Enter submission.
+
+
+
+### Miscellaneous Tasks
+
+- **Update CHANGELOG.md for v1.0.4 [skip ci]** - ([3e051e1](https://github.com/nospor/teams-tui-go/commit/3e051e17b43911818a3e575296fb0fc380dd9af8))
+
+
+
 ## [1.0.4] - 2026-06-13
 
 ### Features
