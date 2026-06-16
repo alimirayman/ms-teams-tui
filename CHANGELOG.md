@@ -1,5 +1,40 @@
 # Changelog
 
+## [1.1.1] - 2026-06-16
+
+### Features
+
+- *(ui)* **Display channel message subjects** - ([7a49385](https://github.com/nospor/teams-tui-go/commit/7a49385ae1590f41cce086ebdb2425b30f5bdd30))
+
+
+
+### Bug Fixes
+
+- *(search)* **Persist search status text per conversation to avoid stale footers** - ([5afad6e](https://github.com/nospor/teams-tui-go/commit/5afad6ed6b40425011cf5384ac850f2840a663a7))
+
+
+- *(ui)* **Prevent duplicate '@' prefix on split user mentions** - ([1005207](https://github.com/nospor/teams-tui-go/commit/100520789f8d7c39955d0c43951f172704fb5f28))
+
+
+
+### Other
+
+- **Align main thread messages left and replies right in channels** - ([423107c](https://github.com/nospor/teams-tui-go/commit/423107c2bc2e998a1cd44dd26314fcc9bdf000ba))
+
+
+
+### Performance
+
+- *(search)* **Load SQLite history asynchronously and optimize channel searching** - ([022d9b4](https://github.com/nospor/teams-tui-go/commit/022d9b4db6e0be6678775581b79bc9b6a3d97d58))
+
+
+
+### Miscellaneous Tasks
+
+- **Update CHANGELOG.md for v1.1.0 [skip ci]** - ([bc02e8a](https://github.com/nospor/teams-tui-go/commit/bc02e8aa368e3b0c5cc17ce14c27af5f018ddc8b))
+
+
+
 ## [1.1.0] - 2026-06-16
 
 ### Features
