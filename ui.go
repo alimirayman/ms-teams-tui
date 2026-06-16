@@ -2043,7 +2043,7 @@ func (m Model) handleMessageSelectionModeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		if m.app.MessageSelectedIndex < len(m.app.Messages) {
 			msgObj := m.app.Messages[m.app.MessageSelectedIndex]
 			if msgObj.Body != nil && msgObj.Body.Content != nil {
-				text := stripANSI(HTMLToText(*msgObj.Body.Content, msgObj.Attachments))
+				text := stripANSI(HTMLToText(*msgObj.Body.Content, msgObj.Attachments, msgObj.Mentions))
 				if err := clipboard.WriteAll(text); err == nil {
 					m.app.SetStatus("Message copied to clipboard", 3*time.Second)
 				} else {
@@ -2610,7 +2610,7 @@ func (m Model) renderRightPanel(w, h int) string {
 		// Build a one-line preview using the same style as renderMessageReference.
 		preview := ""
 		if ref.Body != nil && ref.Body.Content != nil {
-			preview = stripANSI(HTMLToText(*ref.Body.Content, ref.Attachments))
+			preview = stripANSI(HTMLToText(*ref.Body.Content, ref.Attachments, ref.Mentions))
 		}
 		preview = strings.ReplaceAll(preview, "\n", " ")
 		const maxPrev = 80
@@ -3727,7 +3727,7 @@ func (m *Model) notify(senderName string, msg Message) {
 	body := ""
 	if m.app.NotificationShowPreview {
 		if msg.Body != nil && msg.Body.Content != nil {
-			body = stripANSI(HTMLToText(*msg.Body.Content, msg.Attachments))
+			body = stripANSI(HTMLToText(*msg.Body.Content, msg.Attachments, msg.Mentions))
 			// Remove newlines and collapse spaces for a cleaner notification body.
 			body = strings.ReplaceAll(body, "\n", " ")
 			body = strings.Join(strings.Fields(body), " ")
@@ -4328,7 +4328,7 @@ func (m Model) handleSearchPopupNavigationKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		if len(m.app.SearchPopupResults) > 0 && m.app.SearchPopupSelectedIndex < len(m.app.SearchPopupResults) {
 			msgObj := m.app.SearchPopupResults[m.app.SearchPopupSelectedIndex].Message
 			if msgObj.Body != nil && msgObj.Body.Content != nil {
-				text := stripANSI(HTMLToText(*msgObj.Body.Content, msgObj.Attachments))
+				text := stripANSI(HTMLToText(*msgObj.Body.Content, msgObj.Attachments, msgObj.Mentions))
 				if err := clipboard.WriteAll(text); err == nil {
 					m.app.SetSearchStatus("Message copied to clipboard", 3*time.Second)
 				} else {

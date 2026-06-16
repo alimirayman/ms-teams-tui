@@ -63,10 +63,21 @@ type Message struct {
 	Body            *MessageBody        `json:"body,omitempty"`
 	Attachments     []MessageAttachment `json:"attachments,omitempty"`
 	Reactions       []MessageReaction   `json:"reactions,omitempty"`
+	Mentions        []MessageMention    `json:"mentions,omitempty"`
 	PlainTextCached *string             `json:"-"`
 	// IsReply is set in-process (not from JSON) for Teams channel thread replies.
 	IsReply   bool   `json:"-"`
 	ReplyToID string `json:"-"` // ID of the root message this is a reply to
+}
+
+type MessageMention struct {
+	ID          *int                  `json:"id,omitempty"`
+	MentionText *string               `json:"mentionText,omitempty"`
+	Mentioned   *MentionedIdentitySet `json:"mentioned,omitempty"`
+}
+
+type MentionedIdentitySet struct {
+	User *MessageUser `json:"user,omitempty"`
 }
 
 // GetPlainText returns the cached plain text of the message, parsing HTML on demand once.
@@ -85,7 +96,7 @@ func (msg *Message) GetPlainText() string {
 		msg.PlainTextCached = &text
 		return text
 	}
-	text := HTMLToText(*msg.Body.Content, msg.Attachments)
+	text := HTMLToText(*msg.Body.Content, msg.Attachments, msg.Mentions)
 	msg.PlainTextCached = &text
 	return text
 }
@@ -1346,7 +1357,7 @@ var urlRegex = regexp.MustCompile(`https?://[^\s<>"]+`)
 // HTMLToText converts a Teams message HTML body to plain text suitable for
 // terminal display. It returns the rendered text and a lipgloss-compatible
 // styled string (where special elements are coloured).
-func HTMLToText(htmlContent string, attachments []MessageAttachment) string {
+func HTMLToText(htmlContent string, attachments []MessageAttachment, mentions []MessageMention) string {
 	if htmlContent == "" {
 		return ""
 	}
@@ -1355,6 +1366,15 @@ func HTMLToText(htmlContent string, attachments []MessageAttachment) string {
 	attByID := make(map[string]MessageAttachment, len(attachments))
 	for _, a := range attachments {
 		attByID[a.ID] = a
+	}
+
+	// Build a map of mention ID string to user ID.
+	mentionUserByID := make(map[string]string)
+	for _, m := range mentions {
+		if m.ID != nil && m.Mentioned != nil && m.Mentioned.User != nil && m.Mentioned.User.ID != nil {
+			idStr := fmt.Sprintf("%d", *m.ID)
+			mentionUserByID[idStr] = *m.Mentioned.User.ID
+		}
 	}
 
 	tokenizer := html.NewTokenizer(strings.NewReader(htmlContent))
@@ -1376,6 +1396,8 @@ func HTMLToText(htmlContent string, attachments []MessageAttachment) string {
 	inCode := false // <code> tag (inline or inside <pre>)
 	inMention := false
 	mentionPrefixAdded := false
+	seenMentions := make(map[string]bool)
+	seenUserMentions := make(map[string]bool)
 
 	// ---- NEW: list state ----
 	type listInfo struct {
@@ -1448,6 +1470,30 @@ func HTMLToText(htmlContent string, attachments []MessageAttachment) string {
 			case "at":
 				inMention = true
 				mentionPrefixAdded = false
+				var atID string
+				for _, attr := range token.Attr {
+					if attr.Key == "id" {
+						atID = attr.Val
+						break
+					}
+				}
+				if atID != "" {
+					userID := mentionUserByID[atID]
+					if userID != "" {
+						if seenUserMentions[userID] {
+							mentionPrefixAdded = true
+						} else {
+							seenUserMentions[userID] = true
+						}
+					} else {
+						// Fallback to tag ID deduplication
+						if seenMentions[atID] {
+							mentionPrefixAdded = true
+						} else {
+							seenMentions[atID] = true
+						}
+					}
+				}
 
 			// ---- lists ----
 			case "ul":

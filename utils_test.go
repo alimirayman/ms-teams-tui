@@ -162,7 +162,7 @@ func TestExtractAndProcessInlineImages(t *testing.T) {
 	}
 
 	// Test HTMLToText inline image naming
-	plainText := HTMLToText(htmlContent, msg.Attachments)
+	plainText := HTMLToText(htmlContent, msg.Attachments, nil)
 	if !strings.Contains(plainText, "My screenshot.png") {
 		t.Errorf("expected plainText to contain 'My screenshot.png', got %q", plainText)
 	}
@@ -178,9 +178,13 @@ func TestHTMLToTextMentions(t *testing.T) {
 	defer lipgloss.SetColorProfile(oldProfile)
 
 
+	// Helper functions for pointers
+	intPtr := func(v int) *int { return &v }
+	stringPtr := func(v string) *string { return &v }
+
 	// Case 1: Mention without '@' prefix
 	html1 := `Hello <at id="0">John Doe</at>!`
-	res1 := HTMLToText(html1, nil)
+	res1 := HTMLToText(html1, nil, nil)
 	plain1 := stripANSI(res1)
 	expected1 := "Hello @John Doe!"
 	if plain1 != expected1 {
@@ -193,11 +197,60 @@ func TestHTMLToTextMentions(t *testing.T) {
 
 	// Case 2: Mention that already starts with '@'
 	html2 := `Hello <at id="1">@Jane Doe</at>!`
-	res2 := HTMLToText(html2, nil)
+	res2 := HTMLToText(html2, nil, nil)
 	plain2 := stripANSI(res2)
 	expected2 := "Hello @Jane Doe!"
 	if plain2 != expected2 {
 		t.Errorf("expected %q, got %q", expected2, plain2)
+	}
+
+	// Case 3: Mention with non-breaking space
+	html3 := `Hello <at id="2">John&nbsp;Doe</at>!`
+	res3 := HTMLToText(html3, nil, nil)
+	plain3 := stripANSI(res3)
+	expected3 := "Hello @John\u00a0Doe!" // \u00a0 is nbsp
+	if plain3 != expected3 {
+		t.Errorf("expected %q, got %q", expected3, plain3)
+	}
+
+	// Case 4: Mention split into two tags with same ID
+	html4 := `Hello <at id="0">John</at> <at id="0">Doe</at>!`
+	res4 := HTMLToText(html4, nil, nil)
+	plain4 := stripANSI(res4)
+	expected4 := "Hello @John Doe!"
+	if plain4 != expected4 {
+		t.Errorf("expected %q, got %q", expected4, plain4)
+	}
+
+	// Case 5: Mention split into two tags with different IDs but same user ID
+	html5 := `Hello <at id="0">John</at> <at id="1">Doe</at>!`
+	mentions5 := []MessageMention{
+		{
+			ID:          intPtr(0),
+			MentionText: stringPtr("John"),
+			Mentioned: &MentionedIdentitySet{
+				User: &MessageUser{
+					ID:          stringPtr("user-123"),
+					DisplayName: stringPtr("John Doe"),
+				},
+			},
+		},
+		{
+			ID:          intPtr(1),
+			MentionText: stringPtr("Doe"),
+			Mentioned: &MentionedIdentitySet{
+				User: &MessageUser{
+					ID:          stringPtr("user-123"),
+					DisplayName: stringPtr("John Doe"),
+				},
+			},
+		},
+	}
+	res5 := HTMLToText(html5, nil, mentions5)
+	plain5 := stripANSI(res5)
+	expected5 := "Hello @John Doe!"
+	if plain5 != expected5 {
+		t.Errorf("expected %q, got %q", expected5, plain5)
 	}
 }
 
