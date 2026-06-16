@@ -181,6 +181,7 @@ Each feature is disabled by default and requires an additional Graph API permiss
 
 ```json
 {
+  "sqlite_enabled": false,
   "file_preview_enabled": true,
   "file_preview_in_terminal": false,
   "presence_enabled": true,
@@ -193,6 +194,7 @@ Each feature is disabled by default and requires an additional Graph API permiss
 
 | Config key | Default | Required permission | Effect |
 |---|---|---|---|
+| `sqlite_enabled` | `false` | - | Enables offline caching via SQLite (`~/.cache/teams-tui-go/teams-tui-go.db`). Instantly loads messages when entering chats/channels, syncing updates in the background. |
 | `file_preview_enabled` | `false` | `Files.Read` | Tab through attachments in the `v` popup and press Enter to download to `~/Downloads/` |
 | `file_preview_in_terminal` | `false` | `Files.Read` | Previews the highlighted image attachment inside the details popup on the right side using the Kitty Graphics Protocol (requires `file_preview_enabled: true`) |
 | `presence_enabled` | `false` | `Presence.Read.All` | Press `p` in message selection mode to see sender availability |
@@ -326,6 +328,7 @@ When in compose mode (`i`), you can paste images (PNG/JPEG) directly from your s
 | `~/.config/teams-tui-go/favourites.json`       | Pinned/favourite chat IDs           |
 | `~/.cache/teams-tui-go/token.json`             | OAuth2 access + refresh tokens      |
 | `~/.cache/teams-tui-go/profile.json`           | Cached user profile                 |
+| `~/.cache/teams-tui-go/teams-tui-go.db`       | SQLite database caching messages    |
 
 ---
 

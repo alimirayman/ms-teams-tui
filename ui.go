@@ -449,6 +449,33 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.lastMsgID[c.ID] = newID
 				m.lastMsgTime[c.ID] = newTime
 
+				// Save/cache the new message immediately so it's visible if we navigate to the chat.
+				m.app.HistoryMessages[c.ID] = mergeHistoryMessages(m.app.HistoryMessages[c.ID], []Message{*c.LastMessagePreview})
+
+				existingCached := m.app.CachedMessages[c.ID]
+				if len(existingCached) > 0 {
+					foundInCache := false
+					for _, cm := range existingCached {
+						if cm.ID == c.LastMessagePreview.ID {
+							foundInCache = true
+							break
+						}
+					}
+					if !foundInCache {
+						existingCached = append([]Message{*c.LastMessagePreview}, existingCached...)
+						sort.Slice(existingCached, func(i, j int) bool {
+							return existingCached[i].CreatedDateTime > existingCached[j].CreatedDateTime
+						})
+						m.app.CachedMessages[c.ID] = existingCached
+					}
+				} else {
+					m.app.CachedMessages[c.ID] = []Message{*c.LastMessagePreview}
+				}
+
+				if m.app.Features.SqliteEnabled {
+					go SaveMessages(c.ID, []Message{*c.LastMessagePreview})
+				}
+
 				// Determine if it was sent by us.
 				isOwnMsg := false
 				if m.app.CurrentUserName != nil && c.LastMessagePreview.From != nil &&
@@ -459,6 +486,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				isActiveChat := false
 				if selChat := m.app.GetSelectedChat(); selChat != nil && selChat.ID == c.ID && m.focused {
 					isActiveChat = true
+				}
+
+				if isActiveChat {
+					// Append/merge into active messages list as well so it's shown immediately
+					existingMsgs := m.app.Messages
+					foundInActive := false
+					for _, am := range existingMsgs {
+						if am.ID == c.LastMessagePreview.ID {
+							foundInActive = true
+							break
+						}
+					}
+					if !foundInActive {
+						existingMsgs = append([]Message{*c.LastMessagePreview}, existingMsgs...)
+						sort.Slice(existingMsgs, func(i, j int) bool {
+							return existingMsgs[i].CreatedDateTime > existingMsgs[j].CreatedDateTime
+						})
+						m.app.Messages = existingMsgs
+					}
 				}
 
 				if isOwnMsg || isActiveChat {
@@ -597,6 +643,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		m.reactionsInitialized[msg.ChatID] = true
 		m.app.HistoryMessages[msg.ChatID] = mergeHistoryMessages(m.app.HistoryMessages[msg.ChatID], msg.Messages)
+		if m.app.Features.SqliteEnabled {
+			go SaveMessages(msg.ChatID, msg.Messages)
+		}
 
 		if len(newReactions) > 0 {
 			m.promoteChat(msg.ChatID)
@@ -649,6 +698,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			m.reactionsInitialized[chatID] = true
 			m.app.HistoryMessages[chatID] = mergeHistoryMessages(m.app.HistoryMessages[chatID], msgs)
+			if m.app.Features.SqliteEnabled {
+				go SaveMessages(chatID, msgs)
+			}
 
 			if len(newReactions) > 0 {
 				m.promoteChat(chatID)
@@ -683,9 +735,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 							existing = append(existing, nm)
 						}
 					}
+					sort.Slice(existing, func(i, j int) bool {
+						return existing[i].CreatedDateTime > existing[j].CreatedDateTime
+					})
 					m.app.CachedMessages[loadedChatID] = existing
 				}
 				m.app.CachedNextLink[loadedChatID] = msg.NextLink
+				if m.app.Features.SqliteEnabled {
+					go SaveMessages(loadedChatID, msg.Messages)
+					if msg.NextLink != "" {
+						go SaveNextLink(loadedChatID, msg.NextLink)
+					}
+				}
 			}
 		}
 		// Discard UI update if the selected chat changed since we issued the load,
@@ -763,7 +824,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						}
 					}
 					if len(toPrepend) > 0 {
-						m.app.HistoryMessages[chat.ID] = append(toPrepend, hist...)
+						m.app.HistoryMessages[chat.ID] = mergeHistoryMessages(hist, toPrepend)
+						if m.app.SearchPopupMode {
+							m.RebuildSearchPopupResults()
+							m.saveSearchState()
+						}
 					}
 				}
 			}
@@ -843,18 +908,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.app.SetSearchLoadingMessages(false)
 
 			// Update history messages cache directly
+			m.app.HistoryMessages[chat.ID] = mergeHistoryMessages(m.app.HistoryMessages[chat.ID], msg.Messages)
 			hist := m.app.HistoryMessages[chat.ID]
-			existingIDs := make(map[string]bool)
-			for _, mObj := range hist {
-				existingIDs[mObj.ID] = true
-			}
-			for _, newM := range msg.Messages {
-				if !existingIDs[newM.ID] {
-					hist = append(hist, newM)
+			m.app.HistoryNextLink[chat.ID] = msg.NextLink
+
+			// Save newly loaded search messages and next link to SQLite!
+			if m.app.Features.SqliteEnabled {
+				go SaveMessages(chat.ID, msg.Messages)
+				if msg.NextLink != "" {
+					go SaveNextLink(chat.ID, msg.NextLink)
 				}
 			}
-			m.app.HistoryMessages[chat.ID] = hist
-			m.app.HistoryNextLink[chat.ID] = msg.NextLink
 
 			// Rebuild search popup results dynamically if search popup is still open
 			if m.app.SearchPopupMode {
@@ -883,9 +947,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.app.AppendOlderMessages(msg.Messages, msg.NextLink)
 			m.updateScroll()
 			// Update the per-chat cache with the newly paginated messages.
-			if chat != nil {
-				m.app.CachedMessages[chat.ID] = m.app.Messages
-				m.app.CachedNextLink[chat.ID] = msg.NextLink
+			var conversationID string
+			if m.channelSelectedIndex >= 0 {
+				conversationID = m.app.SelectedChannelID
+			} else if chat != nil {
+				conversationID = chat.ID
+			}
+			if conversationID != "" {
+				m.app.CachedMessages[conversationID] = m.app.Messages
+				m.app.CachedNextLink[conversationID] = msg.NextLink
+			}
+		}
+
+		var conversationID string
+		if m.channelSelectedIndex >= 0 {
+			conversationID = m.app.SelectedChannelID
+		} else if chat != nil {
+			conversationID = chat.ID
+		}
+		if conversationID != "" && m.app.Features.SqliteEnabled {
+			go SaveMessages(conversationID, msg.Messages)
+			if msg.NextLink != "" {
+				go SaveNextLink(conversationID, msg.NextLink)
 			}
 		}
 
@@ -1010,6 +1093,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// (eventual consistency). The entry is cleared once the API echoes
 			// back the updated content.
 			m.pendingEdits[msg.MessageID] = newHTML
+			if m.app.Features.SqliteEnabled {
+				go UpdateStoredMessageBody(msg.MessageID, newHTML)
+			}
 
 			// Also patch the live caches immediately so the UI updates now.
 			m.applyPendingEdits(msg.ChatID)
@@ -1091,6 +1177,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Cache messages and next link
 			m.app.CachedMessages[msg.ChannelID] = msg.Messages
 			m.app.CachedNextLink[msg.ChannelID] = msg.NextLink
+			if m.app.Features.SqliteEnabled {
+				go SaveMessages(msg.ChannelID, msg.Messages)
+				if msg.NextLink != "" {
+					go SaveNextLink(msg.ChannelID, msg.NextLink)
+				}
+			}
 
 			if m.app.Features.ChannelMentions && len(m.app.TeamMembersCache[msg.TeamID]) == 0 {
 				cmds = append(cmds, loadTeamMembersCmd(m.clientID, msg.TeamID))
@@ -1138,6 +1230,32 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.lastMsgID[msg.ChannelID] = newest.ID
 						m.lastMsgTime[msg.ChannelID] = newTime
 						m.lastReadMsgID[msg.ChannelID] = newest.ID
+					}
+				}
+			}
+
+			// Keep history cache in sync with new incoming messages
+			if msg.ChannelID != "" {
+				if hist, ok := m.app.HistoryMessages[msg.ChannelID]; ok && len(hist) > 0 {
+					var toPrepend []Message
+					for _, newMsg := range msg.Messages {
+						found := false
+						for _, oldMsg := range hist {
+							if oldMsg.ID == newMsg.ID {
+								found = true
+								break
+							}
+						}
+						if !found {
+							toPrepend = append(toPrepend, newMsg)
+						}
+					}
+					if len(toPrepend) > 0 {
+						m.app.HistoryMessages[msg.ChannelID] = mergeHistoryMessages(hist, toPrepend)
+						if m.app.SearchPopupMode {
+							m.RebuildSearchPopupResults()
+							m.saveSearchState()
+						}
 					}
 				}
 			}
@@ -1400,6 +1518,15 @@ func (m Model) handleNormalModeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		chat := m.app.GetSelectedChat()
 		if chat != nil {
 			hist := m.app.HistoryMessages[chat.ID]
+			if m.app.Features.SqliteEnabled && !m.app.HistoryInitialized[chat.ID] {
+				dbMsgs, err := GetStoredMessages(chat.ID, 10000)
+				if err == nil && len(dbMsgs) > 0 {
+					hist = dbMsgs
+					nextLink, _ := GetNextLink(chat.ID)
+					m.app.HistoryNextLink[chat.ID] = nextLink
+					m.app.HistoryInitialized[chat.ID] = true
+				}
+			}
 			existingIDs := make(map[string]bool)
 			for _, mObj := range hist {
 				existingIDs[mObj.ID] = true
@@ -1410,9 +1537,7 @@ func (m Model) handleNormalModeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 					toAdd = append(toAdd, mainM)
 				}
 			}
-			if len(toAdd) > 0 {
-				m.app.HistoryMessages[chat.ID] = append(toAdd, hist...)
-			}
+			m.app.HistoryMessages[chat.ID] = mergeHistoryMessages(hist, toAdd)
 			if !m.app.HistoryInitialized[chat.ID] {
 				m.app.HistoryNextLink[chat.ID] = m.app.NextLink
 				m.app.HistoryInitialized[chat.ID] = true
@@ -1552,20 +1677,7 @@ func (m Model) handleNormalModeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 			if entry.teamID != m.app.SelectedChannelTeamID || entry.channelID != m.app.SelectedChannelID {
 				m.app.SelectedChannelTeamID = entry.teamID
 				m.app.SelectedChannelID = entry.channelID
-				m.lastMessageRefresh = time.Now()
-				// If we have cached messages, show them immediately to avoid a blank screen
-				if cached, ok := m.app.CachedMessages[entry.channelID]; ok && len(cached) > 0 {
-					m.app.Messages = cached
-					m.app.NextLink = m.app.CachedNextLink[entry.channelID]
-					m.app.SetLoadingMessages(false)
-					m.app.SnapToBottom = true
-				} else {
-					m.app.Messages = nil
-					m.app.NextLink = ""
-					m.app.SetLoadingMessages(true)
-					m.app.SnapToBottom = true
-				}
-				return m, loadChannelMessagesCmd(m.clientID, entry.teamID, entry.channelID)
+				return m.loadChannelMessages(entry.teamID, entry.channelID)
 			}
 		}
 		return m, nil
@@ -1582,19 +1694,7 @@ func (m Model) handleNormalModeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		m.app.SnapToBottom = true
 		if chat := m.app.GetSelectedChat(); chat != nil {
 			m = m.markRead()
-			m.lastMessageRefresh = time.Now()
-			// If we have a cached copy of this chat's messages, show it
-			// immediately so the user doesn't see a blank "loading" screen.
-			if cached, ok := m.app.CachedMessages[chat.ID]; ok && len(cached) > 0 {
-				m.app.Messages = cached
-				m.app.NextLink = m.app.CachedNextLink[chat.ID]
-				m.app.SetLoadingMessages(false)
-			} else {
-				m.app.Messages = nil
-				m.app.NextLink = ""
-				m.app.SetLoadingMessages(true)
-			}
-			return m, loadMessagesCmd(m.clientID, chat.ID, m.app.SelectedIndex)
+			return m.loadChatMessages(chat.ID, m.app.SelectedIndex)
 		}
 	}
 
@@ -1780,8 +1880,15 @@ func (m Model) handleSearchModeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 
 		chat := m.app.GetSelectedChat()
 		if chat != nil {
+			// Clear previous search query results to start fresh
+			m.app.SearchPopupResults = nil
+			m.app.SearchPopupSelectedIndex = 0
+			m.app.SearchPopupScrollOffset = 0
+
 			m.RebuildSearchPopupResults()
 
+			// Start the background API fetch loop to load missing messages from the API
+			// if we haven't loaded all history yet (nextLink is not empty).
 			nextLink := m.app.HistoryNextLink[chat.ID]
 			if nextLink != "" {
 				m.app.SetSearchLoadingMessages(true)
@@ -3803,7 +3910,7 @@ func highlightQuery(text, query string) string {
 
 // RebuildSearchPopupResults filters the history messages by search query, merges context, and updates state.
 func (m *Model) RebuildSearchPopupResults() {
-	query := strings.TrimSpace(m.searchInput.Value())
+	query := m.app.SearchQuery
 	if query == "" {
 		m.app.SearchPopupResults = nil
 		m.app.SearchPopupSelectedIndex = 0
@@ -3877,8 +3984,8 @@ func (m *Model) RebuildSearchPopupResults() {
 	}
 
 	// Sort the included indices. Since history is newest-first (index 0 is newest, len-1 is oldest),
-	// if we sort included indices in descending order (e.g. from largest index to smallest),
-	// we will render the popup list in chronological order (oldest at the top, newest at the bottom)!
+	// sorting included indices in descending order (from largest index to smallest)
+	// will render the popup list in chronological order (oldest at the top, newest at the bottom).
 	var sortedIndices []int
 	for i := len(history) - 1; i >= 0; i-- {
 		if includedIndices[i] {
@@ -3896,6 +4003,11 @@ func (m *Model) RebuildSearchPopupResults() {
 		})
 	}
 
+	// Explicitly sort items oldest-first (chronological, closest to today at index len-1).
+	sort.Slice(items, func(i, j int) bool {
+		return items[i].Message.CreatedDateTime < items[j].Message.CreatedDateTime
+	})
+
 	m.app.SearchPopupResults = items
 
 	// Restore selection focus by message ID to prevent scrolling/jumping when older history loads
@@ -3909,13 +4021,22 @@ func (m *Model) RebuildSearchPopupResults() {
 			}
 		}
 		if !found {
-			if m.app.SearchPopupSelectedIndex >= len(items) {
-				m.app.SearchPopupSelectedIndex = len(items) - 1
+			m.app.SearchPopupSelectedIndex = 0
+			for i := len(items) - 1; i >= 0; i-- {
+				if items[i].IsMatch {
+					m.app.SearchPopupSelectedIndex = i
+					break
+				}
 			}
 		}
 	} else {
-		if m.app.SearchPopupSelectedIndex >= len(items) {
-			m.app.SearchPopupSelectedIndex = len(items) - 1
+		// New search: default selection to the last actual match (latest/newest match chronologically)
+		m.app.SearchPopupSelectedIndex = 0
+		for i := len(items) - 1; i >= 0; i-- {
+			if items[i].IsMatch {
+				m.app.SearchPopupSelectedIndex = i
+				break
+			}
 		}
 	}
 	if m.app.SearchPopupSelectedIndex < 0 {
@@ -3999,7 +4120,11 @@ func (m Model) renderSearchPopup(w, h int) string {
 				// Add gap indicator height if applicable
 				if i > 0 {
 					prevItem := results[i-1]
-					if prevItem.HistoryIndex-item.HistoryIndex > 1 {
+					diff := item.HistoryIndex - prevItem.HistoryIndex
+					if diff < 0 {
+						diff = -diff
+					}
+					if diff > 1 {
 						hSum += 3 // 3 blank/separator lines
 					}
 				}
@@ -4029,7 +4154,11 @@ func (m Model) renderSearchPopup(w, h int) string {
 			var gapLines []string
 			if idx > 0 {
 				prevItem := results[idx-1]
-				if prevItem.HistoryIndex-item.HistoryIndex > 1 {
+				diff := item.HistoryIndex - prevItem.HistoryIndex
+				if diff < 0 {
+					diff = -diff
+				}
+				if diff > 1 {
 					gapLines = append(gapLines, "")
 					gapLines = append(gapLines, lipgloss.NewStyle().Foreground(colDimGray).Render("  ─── [gap in history] ───"))
 					gapLines = append(gapLines, "")
@@ -4173,6 +4302,18 @@ func (m Model) handleSearchPopupNavigationKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	case "k", "up":
 		if m.app.SearchPopupSelectedIndex > 0 {
 			m.app.SearchPopupSelectedIndex--
+		} else {
+			// At the top of the search results list (oldest match currently loaded)
+			chat := m.app.GetSelectedChat()
+			if chat != nil {
+				nextLink := m.app.HistoryNextLink[chat.ID]
+				if nextLink != "" && !m.app.SearchLoadingMessages {
+					m.app.SetSearchLoadingMessages(true)
+					m.app.SetSearchStatus(fmt.Sprintf("Loading older messages for '%s'...", m.app.SearchQuery), 0)
+					m.saveSearchState()
+					return m, loadMoreMessagesCmd(m.clientID, nextLink, m.app.SelectedIndex, true)
+				}
+			}
 		}
 		m.saveSearchState()
 		return m, nil
@@ -4658,12 +4799,8 @@ func (m Model) handleUserSearchNavigationKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 				m.app.SelectedChannelID = ""
 				m.app.UserSearchPopupMode = false
 				m.app.UserSearchMode = false
-				m.app.Messages = nil
-				m.app.NextLink = ""
-				m.app.SetLoadingMessages(true)
 				m.app.SnapToBottom = true
-				m.lastMessageRefresh = time.Now()
-				return m, loadMessagesCmd(m.clientID, targetID, idx)
+				return m.loadChatMessages(targetID, idx)
 			}
 		} else if item.Type == UserSearchItemChannel {
 			chans := m.allChannels()
@@ -4680,12 +4817,7 @@ func (m Model) handleUserSearchNavigationKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 				m.app.SelectedChannelID = item.Channel.channelID
 				m.app.UserSearchPopupMode = false
 				m.app.UserSearchMode = false
-				m.app.Messages = nil
-				m.app.NextLink = ""
-				m.app.SetLoadingMessages(true)
-				m.app.SnapToBottom = true
-				m.lastMessageRefresh = time.Now()
-				return m, loadChannelMessagesCmd(m.clientID, item.Channel.teamID, item.Channel.channelID)
+				return m.loadChannelMessages(item.Channel.teamID, item.Channel.channelID)
 			}
 		}
 	}
@@ -5661,5 +5793,74 @@ func (m Model) rebuildMentionSuggestions() Model {
 	}
 
 	return m
+}
+
+func (m Model) loadChatMessages(chatID string, chatIndex int) (Model, tea.Cmd) {
+	m.lastMessageRefresh = time.Now()
+	// 1. Check in-memory cache first
+	if cached, ok := m.app.CachedMessages[chatID]; ok && len(cached) > 0 {
+		m.app.Messages = cached
+		m.app.NextLink = m.app.CachedNextLink[chatID]
+		m.app.SetLoadingMessages(false)
+		return m, nil
+	}
+
+	// 2. If SQLite enabled, check DB
+	if m.app.Features.SqliteEnabled {
+		dbMsgs, err := GetStoredMessages(chatID, ResolveMessageLimit())
+		if err == nil && len(dbMsgs) > 0 {
+			m.app.CachedMessages[chatID] = dbMsgs
+			nextLink, _ := GetNextLink(chatID)
+			m.app.CachedNextLink[chatID] = nextLink
+
+			m.app.Messages = dbMsgs
+			m.app.NextLink = nextLink
+			m.app.SetLoadingMessages(false)
+			// Still fetch the latest messages in the background to update the DB and cache!
+			return m, loadMessagesCmd(m.clientID, chatID, chatIndex)
+		}
+	}
+
+	// 3. Fallback to API load
+	m.app.Messages = nil
+	m.app.NextLink = ""
+	m.app.SetLoadingMessages(true)
+	return m, loadMessagesCmd(m.clientID, chatID, chatIndex)
+}
+
+func (m Model) loadChannelMessages(teamID string, channelID string) (Model, tea.Cmd) {
+	m.lastMessageRefresh = time.Now()
+	// 1. Check in-memory cache first
+	if cached, ok := m.app.CachedMessages[channelID]; ok && len(cached) > 0 {
+		m.app.Messages = cached
+		m.app.NextLink = m.app.CachedNextLink[channelID]
+		m.app.SetLoadingMessages(false)
+		m.app.SnapToBottom = true
+		return m, nil
+	}
+
+	// 2. If SQLite enabled, check DB
+	if m.app.Features.SqliteEnabled {
+		dbMsgs, err := GetStoredMessages(channelID, ResolveMessageLimit())
+		if err == nil && len(dbMsgs) > 0 {
+			m.app.CachedMessages[channelID] = dbMsgs
+			nextLink, _ := GetNextLink(channelID)
+			m.app.CachedNextLink[channelID] = nextLink
+
+			m.app.Messages = dbMsgs
+			m.app.NextLink = nextLink
+			m.app.SetLoadingMessages(false)
+			m.app.SnapToBottom = true
+			// Still fetch the latest messages in the background to update the DB and cache!
+			return m, loadChannelMessagesCmd(m.clientID, teamID, channelID)
+		}
+	}
+
+	// 3. Fallback to API load
+	m.app.Messages = nil
+	m.app.NextLink = ""
+	m.app.SetLoadingMessages(true)
+	m.app.SnapToBottom = true
+	return m, loadChannelMessagesCmd(m.clientID, teamID, channelID)
 }
 

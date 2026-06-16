@@ -245,6 +245,9 @@ func deleteMessageCmd(clientID, chatID, messageID string) tea.Cmd {
 			return MsgSendDone{Err: err}
 		}
 		err = DeleteMessage(token, chatID, messageID)
+		if err == nil && ResolveFeatureSqlite() {
+			_ = UpdateStoredMessageBody(messageID, "*(deleted)*")
+		}
 		return MsgSendDone{Err: err}
 	}
 }
@@ -257,6 +260,9 @@ func deleteChannelMessageCmd(clientID, teamID, channelID, messageID string) tea.
 			return MsgSendDone{Err: err}
 		}
 		err = DeleteChannelMessage(token, teamID, channelID, messageID)
+		if err == nil && ResolveFeatureSqlite() {
+			_ = UpdateStoredMessageBody(messageID, "*(deleted)*")
+		}
 		return MsgSendDone{Err: err}
 	}
 }
@@ -537,6 +543,15 @@ func main() {
 		ProfileExtended:       ResolveFeatureUserProfileExtended(),
 		TeamsChannels:         ResolveFeatureTeamsChannels(),
 		ChannelMentions:       ResolveFeatureChannelMentions(),
+		SqliteEnabled:         ResolveFeatureSqlite(),
+	}
+
+	if app.Features.SqliteEnabled {
+		if err := InitDB(); err != nil {
+			fmt.Printf("⚠️ Warning: Could not initialize SQLite database: %v\n", err)
+		} else {
+			defer CloseDB()
+		}
 	}
 
 	// Build initial stable chat order.

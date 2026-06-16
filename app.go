@@ -75,6 +75,7 @@ type FeatureFlags struct {
 	ProfileExtended       bool // requires User.Read.All (admin consent)
 	TeamsChannels         bool // requires Team.ReadBasic.All + Channel.ReadBasic.All
 	ChannelMentions       bool // requires TeamMember.Read.All
+	SqliteEnabled         bool
 }
 
 // App holds all runtime state for the Teams TUI application.

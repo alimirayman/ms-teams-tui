@@ -125,6 +125,7 @@ type Config struct {
 	TeamsChannelsEnabled  *bool `json:"teams_channels_enabled,omitempty"` // requires Team.ReadBasic.All + Channel.ReadBasic.All + ChannelMessage.Read.All + ChannelMessage.Send + ChannelMessage.ReadWrite
 	ChannelMentionsEnabled *bool `json:"channel_mentions_enabled,omitempty"` // requires TeamMember.Read.All to load members for autocomplete in channels
 	ChannelMsgRefreshMin   *int  `json:"channel_msg_refresh_min,omitempty"`
+	SqliteEnabled          *bool `json:"sqlite_enabled,omitempty"`
 }
 
 // GetAppDir returns ~/.config/teams-tui-go/, creating it if necessary.
@@ -274,6 +275,11 @@ func InitConfig() {
 		cfg.ChannelMsgRefreshMin = &val
 		modified = true
 	}
+	if cfg.SqliteEnabled == nil {
+		v := false
+		cfg.SqliteEnabled = &v
+		modified = true
+	}
 
 	if !exists || modified {
 		_ = SaveConfig(&cfg)
@@ -411,6 +417,12 @@ func ResolveFeatureTeamsChannels() bool {
 func ResolveFeatureChannelMentions() bool {
 	cfg := LoadConfig()
 	return cfg != nil && cfg.ChannelMentionsEnabled != nil && *cfg.ChannelMentionsEnabled
+}
+
+// ResolveFeatureSqlite returns true when SQLite caching is enabled.
+func ResolveFeatureSqlite() bool {
+	cfg := LoadConfig()
+	return cfg != nil && cfg.SqliteEnabled != nil && *cfg.SqliteEnabled
 }
 
 // BuildScopes constructs the OAuth2 scope string from config feature flags.
