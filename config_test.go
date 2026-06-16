@@ -64,6 +64,9 @@ func TestInitConfig(t *testing.T) {
 	if cfg.ChannelMsgRefreshMin == nil || *cfg.ChannelMsgRefreshMin != 2 {
 		t.Errorf("expected channel message refresh min 2, got %v", cfg.ChannelMsgRefreshMin)
 	}
+	if cfg.ExternalEditor == nil || *cfg.ExternalEditor != "" {
+		t.Errorf("expected external editor to be empty string default, got %v", cfg.ExternalEditor)
+	}
 
 	// Case 2: Config exists but is missing some options (e.g. partial).
 	// We'll write a custom config with only ClientID and MessageLimit set, and others missing/nil.
@@ -115,6 +118,9 @@ func TestInitConfig(t *testing.T) {
 	}
 	if updatedCfg.ChannelMsgRefreshMin == nil || *updatedCfg.ChannelMsgRefreshMin != 2 {
 		t.Errorf("expected default channel message refresh min 2, got %v", updatedCfg.ChannelMsgRefreshMin)
+	}
+	if updatedCfg.ExternalEditor == nil || *updatedCfg.ExternalEditor != "" {
+		t.Errorf("expected default external editor to be empty string, got %v", updatedCfg.ExternalEditor)
 	}
 }
 
@@ -365,5 +371,74 @@ func TestResolveFeatureFilePreviewInTerminal(t *testing.T) {
 	resolved := ResolveFeatureFilePreviewInTerminal()
 	if !resolved {
 		t.Errorf("expected file_preview_in_terminal to resolve to true, got false")
+	}
+}
+
+func TestResolveExternalEditor(t *testing.T) {
+	// Set XDG_CONFIG_HOME to a temporary directory.
+	tmpDir, err := os.MkdirTemp("", "teams-tui-editor-test")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	oldXdg := os.Getenv("XDG_CONFIG_HOME")
+	defer os.Setenv("XDG_CONFIG_HOME", oldXdg)
+	os.Setenv("XDG_CONFIG_HOME", tmpDir)
+
+	// Clean env vars to test fallbacks
+	oldEditor := os.Getenv("EDITOR")
+	oldVisual := os.Getenv("VISUAL")
+	defer func() {
+		os.Setenv("EDITOR", oldEditor)
+		os.Setenv("VISUAL", oldVisual)
+	}()
+	os.Unsetenv("EDITOR")
+	os.Unsetenv("VISUAL")
+
+	// Case 1: Default fallback when config and env vars are not set -> "vim"
+	resolved := ResolveExternalEditor()
+	if resolved != "vim" {
+		t.Errorf("expected default editor to resolve to 'vim', got %q", resolved)
+	}
+
+	// Case 2: Environment variable EDITOR is set -> "nano"
+	os.Setenv("EDITOR", "nano")
+	resolved = ResolveExternalEditor()
+	if resolved != "nano" {
+		t.Errorf("expected EDITOR env var to resolve to 'nano', got %q", resolved)
+	}
+	os.Unsetenv("EDITOR")
+
+	// Case 3: Environment variable VISUAL is set -> "emacs"
+	os.Setenv("VISUAL", "emacs")
+	resolved = ResolveExternalEditor()
+	if resolved != "emacs" {
+		t.Errorf("expected VISUAL env var to resolve to 'emacs', got %q", resolved)
+	}
+	os.Unsetenv("VISUAL")
+
+	// Case 4: Config file specifies editor -> "neovim"
+	appDir, err := GetAppDir()
+	if err != nil {
+		t.Fatalf("GetAppDir failed: %v", err)
+	}
+	configPath := filepath.Join(appDir, "config.json")
+
+	val := "neovim"
+	cfg := Config{
+		ExternalEditor: &val,
+	}
+	data, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	if err := os.WriteFile(configPath, data, 0o600); err != nil {
+		t.Fatalf("write failed: %v", err)
+	}
+
+	resolved = ResolveExternalEditor()
+	if resolved != "neovim" {
+		t.Errorf("expected config file editor to resolve to 'neovim', got %q", resolved)
 	}
 }

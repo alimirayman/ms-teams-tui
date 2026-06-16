@@ -165,6 +165,12 @@ type MsgChannelMessagesLoaded struct {
 	Err       error
 }
 
+// MsgEditorFinished is sent when the external editor exits.
+type MsgEditorFinished struct {
+	Content string
+	Err     error
+}
+
 // ---------------------------------------------------------------------------
 // Model — the Bubble Tea application model
 // ---------------------------------------------------------------------------
@@ -263,6 +269,8 @@ func NewModel(app *App, clientID, userID string) Model {
 	ta.Placeholder = "Type your message..."
 	ta.ShowLineNumbers = false
 	ta.CharLimit = 0
+	ta.FocusedStyle.CursorLine = lipgloss.NewStyle()
+	ta.BlurredStyle.CursorLine = lipgloss.NewStyle()
 
 	ti := textinput.New()
 	ti.Placeholder = "Search history..."
@@ -1103,6 +1111,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.applyPendingEdits(msg.ChatID)
 		}
 
+	// ── External editor finished ──────────────────────────────────────────
+	case MsgEditorFinished:
+		if msg.Err != nil {
+			m.app.SetStatus("Editor error: "+msg.Err.Error(), 5*time.Second)
+		} else {
+			m.textarea.SetValue(msg.Content)
+			m.app.InputBuffer = msg.Content
+			m.textarea.CursorEnd()
+		}
+
 	// ── Presence loaded ───────────────────────────────────────
 	case MsgPresenceLoaded:
 		m.app.PresenceLoading = false
@@ -1771,6 +1789,13 @@ func (m Model) handleInputModeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		m.app.ComposedImages = nil
 		m.textarea.Reset()
 		return m, nil
+
+	case "ctrl+g":
+		editorCmd := m.app.ExternalEditor
+		if editorCmd == "" {
+			editorCmd = "vim"
+		}
+		return m, openExternalEditorCmd(m.textarea.Value(), editorCmd)
 
 	case "ctrl+v", "ctrl+shift+v", "ctrl+V":
 		imgBytes, contentType, err := GetClipboardImage()
@@ -2596,7 +2621,7 @@ func (m Model) renderRightPanel(w, h int) string {
 
 	// Build input box contents — add quote preview when replying.
 	hintLine := lipgloss.NewStyle().Foreground(colDimGray).
-		Render("Type your message (Enter to send, Alt+Enter for new line, ESC to cancel, @ to mention, paste IMAGE)")
+		Render("Type your message (Enter to send, Alt+Enter for new line, ESC to cancel, @ to mention, paste IMAGE, Ctrl+g to open external editor)")
 	inputParts := []string{hintLine}
 
 	if m.app.ReplyToMessage != nil {
@@ -5445,6 +5470,7 @@ func (m Model) getHelpContentLines() []string {
 			{"j / k / Tab", "Navigate suggestions (when mention popup is open)"},
 			{"Enter", "Select suggestion (when open) / Send message"},
 			{"Ctrl+v", "Paste image from clipboard"},
+			{"Ctrl+g", "Compose/edit in external editor (e.g. vim)"},
 			{"ESC", "Cancel composing"},
 		}},
 	}

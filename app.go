@@ -168,6 +168,8 @@ type App struct {
 	SelectedChannelID     string // channelID of the currently viewed channel ("" = chat mode)
 	ChannelReplyToID      string // root message ID when replying to a channel thread ("" = new root post)
 	ChannelMsgRefreshMin  int
+	ExternalEditor        string // command/path for the external editor
+
 
 
 	// ── Mention Popup Autocomplete ───────────────────────────────────────

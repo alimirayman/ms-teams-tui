@@ -126,6 +126,7 @@ type Config struct {
 	ChannelMentionsEnabled *bool `json:"channel_mentions_enabled,omitempty"` // requires TeamMember.Read.All to load members for autocomplete in channels
 	ChannelMsgRefreshMin   *int  `json:"channel_msg_refresh_min,omitempty"`
 	SqliteEnabled          *bool `json:"sqlite_enabled,omitempty"`
+	ExternalEditor         *string `json:"external_editor,omitempty"`
 }
 
 // GetAppDir returns ~/.config/teams-tui-go/, creating it if necessary.
@@ -278,6 +279,11 @@ func InitConfig() {
 	if cfg.SqliteEnabled == nil {
 		v := false
 		cfg.SqliteEnabled = &v
+		modified = true
+	}
+	if cfg.ExternalEditor == nil {
+		editor := ""
+		cfg.ExternalEditor = &editor
 		modified = true
 	}
 
@@ -450,4 +456,23 @@ func BuildScopes() string {
 		base += " TeamMember.Read.All"
 	}
 	return base
+}
+
+// ResolveExternalEditor returns the command for the external editor, using precedence:
+//  1. config.json -> external_editor
+//  2. EDITOR environment variable
+//  3. VISUAL environment variable
+//  4. Default ("vim")
+func ResolveExternalEditor() string {
+	cfg := LoadConfig()
+	if cfg != nil && cfg.ExternalEditor != nil && *cfg.ExternalEditor != "" {
+		return *cfg.ExternalEditor
+	}
+	if ed := os.Getenv("EDITOR"); ed != "" {
+		return ed
+	}
+	if vis := os.Getenv("VISUAL"); vis != "" {
+		return vis
+	}
+	return "vim"
 }

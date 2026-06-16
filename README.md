@@ -148,6 +148,16 @@ Configure background refresh rate for unhidden channels (in minutes) in `~/.conf
   ```
   - `channel_msg_refresh_min`: The background polling interval in minutes for unhidden channels (default: 2).
 
+### External Editor
+Configure the external editor to open when pressing `Ctrl+g` in compose mode in `~/.config/teams-tui-go/config.json`:
+
+  ```json
+  {
+    "external_editor": "vim"
+  }
+  ```
+  - `external_editor`: The editor command or path to run (e.g. `"vim"`, `"neovim"`, `"nano"`). If empty/unspecified, it falls back to `$EDITOR`, then `$VISUAL`, and defaults to `"vim"`.
+
 ### Chat Icon Themes
 You can configure the style of chat type indicators in the sidebar using `~/.config/teams-tui-go/config.json`:
 
@@ -280,6 +290,13 @@ When in compose mode (`i`), you can paste images (PNG/JPEG) directly from your s
 > [!NOTE]
 > On Linux, `Ctrl+Shift+V` is intercepted by most terminal emulators to perform text-only paste. To paste clipboard images, make sure to use **`Ctrl+V`** instead, which is passed directly to the TUI.
 
+### External Editor Composing
+
+When in compose mode (`i`), you can press **`Ctrl+g`** to open an external editor (such as `vim`) to compose or edit your message:
+- The current content of the compose input field is saved to a temporary file and opened in the editor.
+- When you save and exit the editor, the edited text is loaded back into the compose input field.
+- The external editor command can be configured in your `config.json` via the `"external_editor"` option. If not specified, it falls back to the `$EDITOR` environment variable, then `$VISUAL` environment variable, and defaults to `"vim"`.
+
 ---
 
 ## Keyboard Controls
@@ -298,6 +315,7 @@ When in compose mode (`i`), you can paste images (PNG/JPEG) directly from your s
 | `h`          | Toggle hide/unhide on selected channel (channels only)    |
 | `i`          | Enter compose mode                                        |
 | `Ctrl+V`     | Paste image from clipboard (in Compose Mode)              |
+| `Ctrl+g`     | Compose/edit message in external editor (in Compose Mode)|
 | `Enter`      | Send message                                              |
 | `Alt+Enter`  | New line in message                                       |
 | `Esc`        | Cancel compose                                            |

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"os/exec"
 	"sort"
 
 	"time"
@@ -385,6 +386,42 @@ func loadChannelMessagesCmd(clientID, teamID, channelID string) tea.Cmd {
 	}
 }
 
+// openExternalEditorCmd launches an external editor with the current content,
+// allowing the user to edit/compose a message, and returns MsgEditorFinished on exit.
+func openExternalEditorCmd(currentText, editorCmd string) tea.Cmd {
+	tmpFile, err := os.CreateTemp("", "teams-tui-msg-*.txt")
+	if err != nil {
+		return func() tea.Msg {
+			return MsgEditorFinished{Err: fmt.Errorf("could not create temporary file: %w", err)}
+		}
+	}
+	tmpPath := tmpFile.Name()
+
+	if _, err := tmpFile.WriteString(currentText); err != nil {
+		tmpFile.Close()
+		os.Remove(tmpPath)
+		return func() tea.Msg {
+			return MsgEditorFinished{Err: fmt.Errorf("could not write to temporary file: %w", err)}
+		}
+	}
+	tmpFile.Close()
+
+	c := exec.Command(editorCmd, tmpPath)
+	return tea.ExecProcess(c, func(err error) tea.Msg {
+		defer os.Remove(tmpPath)
+		if err != nil {
+			return MsgEditorFinished{Err: fmt.Errorf("editor failed: %w", err)}
+		}
+		contentBytes, err := os.ReadFile(tmpPath)
+		if err != nil {
+			return MsgEditorFinished{Err: fmt.Errorf("could not read file: %w", err)}
+		}
+		return MsgEditorFinished{
+			Content: string(contentBytes),
+		}
+	})
+}
+
 // ---------------------------------------------------------------------------
 // Desktop notification
 // ---------------------------------------------------------------------------
@@ -532,6 +569,7 @@ func main() {
 
 	// Load persisted notification mode and settings.
 	app.ChannelMsgRefreshMin = ResolveChannelMsgRefreshMin()
+	app.ExternalEditor = ResolveExternalEditor()
 	if cfg := LoadConfig(); cfg != nil {
 		if cfg.NotificationMode != nil {
 			app.NotificationMode = *cfg.NotificationMode
