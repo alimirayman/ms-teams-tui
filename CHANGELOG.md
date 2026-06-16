@@ -1,5 +1,28 @@
 # Changelog
 
+## [1.1.2] - 2026-06-16
+
+### Features
+
+- **Support composing messages in external editor via Ctrl+g** - ([278392c](https://github.com/nospor/teams-tui-go/commit/278392c0219c570bd493d9ef7b1c3b82de3b0fb2))
+
+
+
+### Bug Fixes
+
+- *(ui)* **Resolve reactor display name from chat members in notifications** - ([f0b2206](https://github.com/nospor/teams-tui-go/commit/f0b2206cf0d3ae71cba7fbcc8d0ac303902929bc))
+
+
+- *(ui)* **Immediately persist and cache reaction updates to prevent loading delays** - ([3464f34](https://github.com/nospor/teams-tui-go/commit/3464f34891e823d2401ddd2e0f9616738f557866))
+
+
+
+### Miscellaneous Tasks
+
+- **Update CHANGELOG.md for v1.1.1 [skip ci]** - ([58b3ab4](https://github.com/nospor/teams-tui-go/commit/58b3ab43a76b08c90774256aebe467aadc203cad))
+
+
+
 ## [1.1.1] - 2026-06-16
 
 ### Features
