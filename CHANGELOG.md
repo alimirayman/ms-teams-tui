@@ -1,5 +1,40 @@
 # Changelog
 
+## [1.1.3] - 2026-06-17
+
+### Features
+
+- *(api)* **Filter out rich card and URL-preview attachments** - ([e047ae0](https://github.com/nospor/teams-tui-go/commit/e047ae02dcedfbc3a4876a2060c61cdfa76c478f))
+
+
+> Only keep actual file attachments (SharePoint/OneDrive), inline images,
+> and message references. Filter out link unfurls, adaptive cards, and
+> video preview attachments (such as YouTube link cards) to prevent them
+> from showing up in the UI as downloadable file attachments.
+
+
+- *(api)* **Append ellipsis to group/meeting chat names with more than 3 members** - ([0077041](https://github.com/nospor/teams-tui-go/commit/0077041098ecd17ca321da12ed603db24b7955f6))
+
+
+
+### Bug Fixes
+
+- **Prevent channel messages leaking into chat view on Tab switch and chat refresh** - ([d087200](https://github.com/nospor/teams-tui-go/commit/d0872004e68b14bf9fa125871807dbdd3f47ca7f))
+
+
+- **Prevent slice out-of-bounds panic in notifyReaction** - ([822c70e](https://github.com/nospor/teams-tui-go/commit/822c70e9ed8a04eb7b2afb574d229d7dc8edaba8))
+
+
+- **Notify and highlight brand-new chats as unread** - ([d33ba1c](https://github.com/nospor/teams-tui-go/commit/d33ba1c18e12dba8a8e3759f052fbbdfb7b832ee))
+
+
+
+### Miscellaneous Tasks
+
+- **Update CHANGELOG.md for v1.1.2 [skip ci]** - ([6ce7ba0](https://github.com/nospor/teams-tui-go/commit/6ce7ba0277558763831a63459725930bd9864283))
+
+
+
 ## [1.1.2] - 2026-06-16
 
 ### Features
