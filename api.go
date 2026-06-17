@@ -1060,18 +1060,16 @@ func GetChats(accessToken string, existingChats []Chat, currentUserName *string)
 				existingT := time.Time{}
 				if existing.LastMessagePreview != nil {
 					existingT, _ = time.Parse(time.RFC3339Nano, existing.LastMessagePreview.CreatedDateTime)
-				}
-				if existing.LastUpdated != nil {
-					if lut, err := time.Parse(time.RFC3339Nano, *existing.LastUpdated); err == nil && lut.After(existingT) {
+				} else if existing.LastUpdated != nil {
+					if lut, err := time.Parse(time.RFC3339Nano, *existing.LastUpdated); err == nil {
 						existingT = lut
 					}
 				}
 				newT := time.Time{}
 				if c.LastMessagePreview != nil {
 					newT, _ = time.Parse(time.RFC3339Nano, c.LastMessagePreview.CreatedDateTime)
-				}
-				if c.LastUpdated != nil {
-					if lut, err := time.Parse(time.RFC3339Nano, *c.LastUpdated); err == nil && lut.After(newT) {
+				} else if c.LastUpdated != nil {
+					if lut, err := time.Parse(time.RFC3339Nano, *c.LastUpdated); err == nil {
 						newT = lut
 					}
 				}
@@ -1096,12 +1094,9 @@ func GetChats(accessToken string, existingChats []Chat, currentUserName *string)
 		t := time.Time{}
 		if c.LastMessagePreview != nil {
 			t, _ = time.Parse(time.RFC3339Nano, c.LastMessagePreview.CreatedDateTime)
-		}
-		if c.LastUpdated != nil {
+		} else if c.LastUpdated != nil {
 			lut, _ := time.Parse(time.RFC3339Nano, *c.LastUpdated)
-			if lut.After(t) {
-				t = lut
-			}
+			t = lut
 		}
 		combined[i] = chatWithTime{c, t}
 	}

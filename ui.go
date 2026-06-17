@@ -453,14 +453,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			newID := c.LastMessagePreview.ID
 
 			newTime, _ := time.Parse(time.RFC3339Nano, c.LastMessagePreview.CreatedDateTime)
-			if c.LastUpdated != nil {
-				lut, _ := time.Parse(time.RFC3339Nano, *c.LastUpdated)
-				if lut.After(newTime) {
-					newTime = lut
-				}
-			}
 
-			if ok && prevID != newID && !m.lastMsgTime[c.ID].IsZero() && newTime.After(m.lastMsgTime[c.ID].Add(time.Second)) {
+			isNewMsgInExistingChat := ok && prevID != newID && !m.lastMsgTime[c.ID].IsZero() && newTime.After(m.lastMsgTime[c.ID].Add(time.Second))
+			isBrandNewChat := !ok && newTime.After(m.app.AppStartTime)
+
+			if isNewMsgInExistingChat || isBrandNewChat {
 				m.lastMsgID[c.ID] = newID
 				m.lastMsgTime[c.ID] = newTime
 
@@ -533,7 +530,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				} else {
 					// Track the unread message ID locally to ensure isUnread returns true
-					m.lastReadMsgID[c.ID] = prevID
+					if isBrandNewChat {
+						m.lastReadMsgID[c.ID] = ""
+					} else {
+						m.lastReadMsgID[c.ID] = prevID
+					}
 
 					// Trigger notification.
 					senderName := ""
@@ -3541,6 +3542,11 @@ func (m Model) isUnread(c Chat) bool {
 			return lastTime.After(readTime.Add(time.Second))
 		}
 	}
+	// Fallback when server viewpoint read time is missing/uninitialized:
+	// a chat is unread if its last message was sent by someone else.
+	if c.LastMessagePreview != nil {
+		return !m.isOwn(*c.LastMessagePreview)
+	}
 
 	return false
 }
@@ -3671,7 +3677,14 @@ func (m Model) mergeChats(fresh []Chat) Model {
 	for _, c := range fresh {
 		if !known[c.ID] {
 			if c.LastMessagePreview != nil {
-				newWithMsg = append(newWithMsg, c.ID)
+				// Only prepend if the message was sent after the app started.
+				// Otherwise, it is an old chat that drifted in, so append it.
+				newTime, err := time.Parse(time.RFC3339Nano, c.LastMessagePreview.CreatedDateTime)
+				if err == nil && newTime.After(m.app.AppStartTime) {
+					newWithMsg = append(newWithMsg, c.ID)
+				} else {
+					newWithout = append(newWithout, c.ID)
+				}
 			} else {
 				newWithout = append(newWithout, c.ID)
 			}

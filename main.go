@@ -470,15 +470,10 @@ func loadInitialChatOrder(chats []Chat) ([]Chat, map[string]string, map[string]t
 			t, _ = time.Parse(time.RFC3339Nano, c.LastMessagePreview.CreatedDateTime)
 			lastMsgIDs[c.ID] = c.LastMessagePreview.ID
 			lastMsgTimes[c.ID] = t
-		}
-
-		// Fallback/override: if LastUpdated is set and is newer, use it.
-		if c.LastUpdated != nil {
+		} else if c.LastUpdated != nil {
 			lut, _ := time.Parse(time.RFC3339Nano, *c.LastUpdated)
-			if lut.After(t) {
-				t = lut
-				lastMsgTimes[c.ID] = t
-			}
+			t = lut
+			lastMsgTimes[c.ID] = t
 		}
 		combined[i] = chatWithTime{c, t}
 	}
