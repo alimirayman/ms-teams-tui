@@ -2032,6 +2032,13 @@ type UserPresence struct {
 	Activity     string `json:"activity"`     // InACall, InAMeeting, InAConferenceCall, etc.
 }
 
+// PresenceEntry holds the presence status for a single user, used in the chat presence popup.
+type PresenceEntry struct {
+	UserName     string
+	Availability string
+	Activity     string
+}
+
 // GetUserPresence fetches the presence status for a user by their Azure AD user ID.
 // Returns an error if the token does not include Presence.Read.All.
 func GetUserPresence(accessToken, userID string) (*UserPresence, error) {
@@ -2044,6 +2051,41 @@ func GetUserPresence(accessToken, userID string) (*UserPresence, error) {
 		return nil, fmt.Errorf("GetUserPresence: parse: %w", err)
 	}
 	return &p, nil
+}
+
+// GetUsersPresence fetches the presence status for multiple users by their Azure AD user IDs.
+// Returns a map of userID -> UserPresence.
+func GetUsersPresence(accessToken string, userIDs []string) (map[string]UserPresence, error) {
+	if len(userIDs) == 0 {
+		return make(map[string]UserPresence), nil
+	}
+	reqBody := struct {
+		IDs []string `json:"ids"`
+	}{
+		IDs: userIDs,
+	}
+	body, err := graphPostWithResponse(accessToken, "/communications/getPresencesByUserId", reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("GetUsersPresence: %w", err)
+	}
+	var res struct {
+		Value []struct {
+			ID           string `json:"id"`
+			Availability string `json:"availability"`
+			Activity     string `json:"activity"`
+		} `json:"value"`
+	}
+	if err := json.Unmarshal(body, &res); err != nil {
+		return nil, fmt.Errorf("GetUsersPresence: parse: %w", err)
+	}
+	m := make(map[string]UserPresence)
+	for _, v := range res.Value {
+		m[v.ID] = UserPresence{
+			Availability: v.Availability,
+			Activity:     v.Activity,
+		}
+	}
+	return m, nil
 }
 
 // ---------------------------------------------------------------------------

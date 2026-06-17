@@ -147,10 +147,13 @@ type App struct {
 	Features                   FeatureFlags
 
 	// ── Presence popup (Feature: presence_enabled) ───────────────────────
-	PresencePopupMode bool
-	PresenceData      *UserPresence
-	PresenceUserName  string // display name of the user whose presence is shown
-	PresenceLoading   bool
+	PresencePopupMode    bool
+	PresenceChatMode     bool
+	PresenceData         *UserPresence
+	PresenceChatData     []PresenceEntry
+	PresenceUserName     string // display name of the user whose presence is shown
+	PresenceLoading      bool
+	PresenceScrollOffset int
 
 	// ── User Profile popup (Feature: user_profile_enabled) ───────────────
 	UserProfilePopupMode bool

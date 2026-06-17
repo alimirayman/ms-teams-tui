@@ -334,6 +334,20 @@ func loadPresenceCmd(clientID, userID, displayName string) tea.Cmd {
 	}
 }
 
+// loadChatPresenceCmd fetches the presence status for multiple users by their Azure AD user IDs.
+// Requires Presence.Read.All scope; returns MsgChatPresenceLoaded.
+func loadChatPresenceCmd(clientID string, userIDs []string) tea.Cmd {
+	return func() tea.Msg {
+		token, err := GetValidTokenSilent(clientID)
+		if err != nil {
+			return MsgChatPresenceLoaded{Err: err}
+		}
+		p, err := GetUsersPresence(token, userIDs)
+		return MsgChatPresenceLoaded{Presences: p, Err: err}
+	}
+}
+
+
 // loadUserProfileCmd fetches the full profile for a user by their Azure AD user ID.
 // Requires User.ReadBasic.All (or User.Read.All for extended info); returns MsgUserProfileLoaded.
 func loadUserProfileCmd(clientID, userID string) tea.Cmd {

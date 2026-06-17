@@ -125,6 +125,12 @@ type MsgPresenceLoaded struct {
 	Err      error
 }
 
+// MsgChatPresenceLoaded is sent when multiple users' presence statuses have been fetched.
+type MsgChatPresenceLoaded struct {
+	Presences map[string]UserPresence
+	Err       error
+}
+
 // MsgUserProfileLoaded is sent when a user's profile has been fetched.
 type MsgUserProfileLoaded struct {
 	UserID  string
@@ -1136,6 +1142,40 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.app.SetStatus("Presence unavailable: "+msg.Err.Error(), 4*time.Second)
 		}
 
+	// ── Chat Presence loaded ──────────────────────────────────
+	case MsgChatPresenceLoaded:
+		m.app.PresenceLoading = false
+		if msg.Err == nil {
+			var entries []PresenceEntry
+			chat := m.app.GetSelectedChat()
+			if chat != nil {
+				for _, member := range chat.Members {
+					if member.UserID != nil && member.DisplayName != nil {
+						uID := *member.UserID
+						displayName := *member.DisplayName
+						if p, ok := msg.Presences[uID]; ok {
+							entries = append(entries, PresenceEntry{
+								UserName:     displayName,
+								Availability: p.Availability,
+								Activity:     p.Activity,
+							})
+						} else {
+							entries = append(entries, PresenceEntry{
+								UserName:     displayName,
+								Availability: "PresenceUnknown",
+								Activity:     "",
+							})
+						}
+					}
+				}
+			}
+			m.app.PresenceChatData = entries
+		} else {
+			m.app.PresencePopupMode = false
+			m.app.PresenceChatMode = false
+			m.app.SetStatus("Presence unavailable: "+msg.Err.Error(), 4*time.Second)
+		}
+
 	// ── User profile loaded ────────────────────────────────────
 	case MsgUserProfileLoaded:
 		m.app.UserProfileLoading = false
@@ -1654,6 +1694,51 @@ func (m Model) handleNormalModeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 					break
 				}
 			}
+		}
+
+	case "p":
+		// Show presence popup for chats (requires presence_enabled feature).
+		if !m.app.Features.Presence {
+			m.app.SetStatus("Presence feature disabled — enable 'presence_enabled' in config.json", 5*time.Second)
+			return m, nil
+		}
+		if m.channelSelectedIndex >= 0 {
+			break
+		}
+		if chat := m.app.GetSelectedChat(); chat != nil {
+			if chat.ChatType != "oneOnOne" && chat.ChatType != "group" {
+				m.app.SetStatus("Presence only supported for oneOnOne and group chats", 4*time.Second)
+				return m, nil
+			}
+			m.app.PresencePopupMode = true
+			m.app.PresenceChatMode = true
+			m.app.PresenceData = nil
+			m.app.PresenceChatData = nil
+			m.app.PresenceLoading = true
+			m.app.PresenceScrollOffset = 0
+			if chat.Topic != nil {
+				m.app.PresenceUserName = *chat.Topic
+			} else if chat.CachedDisplayName != nil {
+				m.app.PresenceUserName = *chat.CachedDisplayName
+			} else {
+				m.app.PresenceUserName = "Chat"
+			}
+
+			// Build list of user IDs to load presence for
+			var userIDs []string
+			for _, member := range chat.Members {
+				if member.UserID != nil && *member.UserID != "" {
+					userIDs = append(userIDs, *member.UserID)
+				}
+			}
+			if len(userIDs) == 0 {
+				m.app.PresenceLoading = false
+				m.app.SetStatus("No members found in this chat to query presence", 4*time.Second)
+				m.app.PresencePopupMode = false
+				m.app.PresenceChatMode = false
+				return m, nil
+			}
+			return m, loadChatPresenceCmd(m.clientID, userIDs)
 		}
 
 	case "h":
@@ -2415,8 +2500,14 @@ func (m Model) View() string {
 		modal := m.renderHelpPopup(popupW, popupH)
 		result = lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, modal)
 	} else if m.app.PresencePopupMode {
-		popupW := m.width * 55 / 100
-		popupH := m.height * 40 / 100
+		var popupW, popupH int
+		if m.app.PresenceChatMode {
+			popupW = m.width * 70 / 100
+			popupH = m.height * 65 / 100
+		} else {
+			popupW = m.width * 55 / 100
+			popupH = m.height * 40 / 100
+		}
 		if popupW < 40 {
 			popupW = 40
 		}
@@ -5472,6 +5563,7 @@ func (m Model) getHelpContentLines() []string {
 			{"/", "Search message history"},
 			{"f", "Toggle favourite (chats only)"},
 			{"h", "Toggle hide/unhide channel (channels only)"},
+			{"p", "Presence status of chat participants (chats only, feature: presence_enabled)"},
 			{"n", "Cycle notification mode"},
 			{"ESC", "Enter sleep / idle mode (stop polling)"},
 			{"?", "Show this help"},
@@ -5662,7 +5754,31 @@ func (m Model) handlePresencePopupKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc", "q", "p", "enter":
 		m.app.PresencePopupMode = false
+		m.app.PresenceChatMode = false
 		m.app.PresenceData = nil
+		m.app.PresenceChatData = nil
+	case "up", "k":
+		if m.app.PresenceChatMode && m.app.PresenceScrollOffset > 0 {
+			m.app.PresenceScrollOffset--
+		}
+	case "down", "j":
+		if m.app.PresenceChatMode {
+			popupH := m.height * 65 / 100
+			if popupH < 10 {
+				popupH = 10
+			}
+			availableHeight := popupH - 6
+			if availableHeight < 1 {
+				availableHeight = 1
+			}
+			maxOffset := len(m.app.PresenceChatData) - availableHeight
+			if maxOffset < 0 {
+				maxOffset = 0
+			}
+			if m.app.PresenceScrollOffset < maxOffset {
+				m.app.PresenceScrollOffset++
+			}
+		}
 	}
 	return m, nil
 }
@@ -5709,22 +5825,77 @@ func (m Model) renderPresencePopup(w, h int) string {
 
 	var lines []string
 	lines = append(lines, title, "")
-	lines = append(lines, labelStyle.Render("User: ")+m.app.PresenceUserName, "")
 
-	if m.app.PresenceLoading {
-		lines = append(lines, dimStyle.Render("Loading presence..."))
-	} else if m.app.PresenceData == nil {
-		lines = append(lines, lipgloss.NewStyle().Foreground(colRed).Render("Presence data unavailable"))
+	if m.app.PresenceChatMode {
+		lines = append(lines, labelStyle.Render("Chat: ")+m.app.PresenceUserName, "")
+		if m.app.PresenceLoading {
+			lines = append(lines, dimStyle.Render("Loading presence..."))
+		} else if len(m.app.PresenceChatData) == 0 {
+			lines = append(lines, lipgloss.NewStyle().Foreground(colRed).Render("No presence data available"))
+		} else {
+			headerLines := 4
+			footerLines := 2
+			availableHeight := h - headerLines - footerLines
+			if availableHeight < 1 {
+				availableHeight = 1
+			}
+
+			maxOffset := len(m.app.PresenceChatData) - availableHeight
+			if maxOffset < 0 {
+				maxOffset = 0
+			}
+			if m.app.PresenceScrollOffset > maxOffset {
+				m.app.PresenceScrollOffset = maxOffset
+			}
+
+			for i := m.app.PresenceScrollOffset; i < len(m.app.PresenceChatData) && i < m.app.PresenceScrollOffset+availableHeight; i++ {
+				entry := m.app.PresenceChatData[i]
+				availColor := presenceAvailabilityColor(entry.Availability)
+				icon := presenceAvailabilityIcon(entry.Availability)
+				availStr := lipgloss.NewStyle().Foreground(availColor).Bold(true).Render(entry.Availability)
+
+				name := entry.UserName
+				maxNameLen := innerW - 15
+				if maxNameLen < 10 {
+					maxNameLen = 10
+				}
+				if len(name) > maxNameLen {
+					name = name[:maxNameLen-3] + "..."
+				}
+
+				statusLine := fmt.Sprintf("%-*s %s %s", maxNameLen, name, icon, availStr)
+				if entry.Activity != "" && entry.Activity != entry.Availability {
+					statusLine += dimStyle.Render(" (" + entry.Activity + ")")
+				}
+				lines = append(lines, statusLine)
+			}
+
+			if len(m.app.PresenceChatData) > availableHeight {
+				scrollIndicator := dimStyle.Render(fmt.Sprintf(" (Showing %d-%d of %d, use j/k to scroll)",
+					m.app.PresenceScrollOffset+1,
+					min(m.app.PresenceScrollOffset+availableHeight, len(m.app.PresenceChatData)),
+					len(m.app.PresenceChatData)))
+				lines[2] = labelStyle.Render("Chat: ") + m.app.PresenceUserName + scrollIndicator
+			}
+		}
 	} else {
-		p := m.app.PresenceData
-		availColor := presenceAvailabilityColor(p.Availability)
-		icon := presenceAvailabilityIcon(p.Availability)
-		availStr := lipgloss.NewStyle().Foreground(availColor).Bold(true).Render(p.Availability)
-		lines = append(lines,
-			labelStyle.Render("Status:   ")+icon+" "+availStr,
-		)
-		if p.Activity != "" && p.Activity != p.Availability {
-			lines = append(lines, labelStyle.Render("Activity: ")+p.Activity)
+		lines = append(lines, labelStyle.Render("User: ")+m.app.PresenceUserName, "")
+
+		if m.app.PresenceLoading {
+			lines = append(lines, dimStyle.Render("Loading presence..."))
+		} else if m.app.PresenceData == nil {
+			lines = append(lines, lipgloss.NewStyle().Foreground(colRed).Render("Presence data unavailable"))
+		} else {
+			p := m.app.PresenceData
+			availColor := presenceAvailabilityColor(p.Availability)
+			icon := presenceAvailabilityIcon(p.Availability)
+			availStr := lipgloss.NewStyle().Foreground(availColor).Bold(true).Render(p.Availability)
+			lines = append(lines,
+				labelStyle.Render("Status:   ")+icon+" "+availStr,
+			)
+			if p.Activity != "" && p.Activity != p.Availability {
+				lines = append(lines, labelStyle.Render("Activity: ")+p.Activity)
+			}
 		}
 	}
 
@@ -5741,9 +5912,14 @@ func (m Model) renderPresencePopup(w, h int) string {
 	}
 	lines = append(lines, footer)
 
+	borderCol := colCyan
+	if m.app.PresenceChatMode {
+		borderCol = colGreen
+	}
+
 	return lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(colCyan).
+		BorderForeground(borderCol).
 		Padding(1, 2).
 		Width(w).Height(h).
 		Render(strings.Join(lines, "\n"))
