@@ -496,8 +496,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 
 				isActiveChat := false
-				if selChat := m.app.GetSelectedChat(); selChat != nil && selChat.ID == c.ID && m.focused {
-					isActiveChat = true
+				if m.channelSelectedIndex < 0 {
+					if selChat := m.app.GetSelectedChat(); selChat != nil && selChat.ID == c.ID && m.focused {
+						isActiveChat = true
+					}
 				}
 
 				if isActiveChat {
@@ -576,8 +578,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				if len(newReactions) > 0 {
 					isActiveChat := false
-					if selChat := m.app.GetSelectedChat(); selChat != nil && selChat.ID == c.ID && m.focused {
-						isActiveChat = true
+					if m.channelSelectedIndex < 0 {
+						if selChat := m.app.GetSelectedChat(); selChat != nil && selChat.ID == c.ID && m.focused {
+							isActiveChat = true
+						}
 					}
 					if !isActiveChat {
 						m.notifyReaction(c, c.LastMessagePreview, newReactions)
@@ -1470,10 +1474,22 @@ func (m Model) handleNormalModeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		if m.channelSelectedIndex >= 0 {
 			// Currently in channels → switch to chats.
 			m.channelSelectedIndex = -1
+			m.app.SelectedChannelTeamID = ""
+			m.app.SelectedChannelID = ""
+			m.app.SnapToBottom = true
+			if chat := m.app.GetSelectedChat(); chat != nil {
+				m = m.markRead()
+				return m.loadChatMessages(chat.ID, m.app.SelectedIndex)
+			}
 		} else {
-			// Currently in chats → switch to channels (go to first if never visited).
-			if m.channelSelectedIndex < 0 {
-				m.channelSelectedIndex = 0
+			// Currently in chats → switch to channels (go to first channel).
+			m.channelSelectedIndex = 0
+			chans := m.allChannels()
+			if len(chans) > 0 {
+				entry := chans[0]
+				m.app.SelectedChannelTeamID = entry.teamID
+				m.app.SelectedChannelID = entry.channelID
+				return m.loadChannelMessages(entry.teamID, entry.channelID)
 			}
 		}
 
