@@ -1257,9 +1257,13 @@ func computeDisplayName(c *Chat) string {
 		if c.Topic != nil && *c.Topic != "" {
 			return *c.Topic
 		}
-		parts := memberAbbreviations(c.Members, 3)
+		parts, hasMore := memberAbbreviations(c.Members, 3)
 		if len(parts) > 0 {
-			return strings.Join(parts, ", ")
+			name := strings.Join(parts, ", ")
+			if hasMore {
+				name += " ..."
+			}
+			return name
 		}
 		if c.ChatType == "group" {
 			return "Unnamed Group"
@@ -1270,16 +1274,20 @@ func computeDisplayName(c *Chat) string {
 		if c.Topic != nil && *c.Topic != "" {
 			return *c.Topic
 		}
-		parts := memberAbbreviations(c.Members, 3)
+		parts, hasMore := memberAbbreviations(c.Members, 3)
 		if len(parts) > 0 {
-			return strings.Join(parts, ", ")
+			name := strings.Join(parts, ", ")
+			if hasMore {
+				name += " ..."
+			}
+			return name
 		}
 		return "Unknown Chat"
 	}
 }
 
-// memberAbbreviations returns up to n abbreviated member display names.
-func memberAbbreviations(members []ChatMember, n int) []string {
+// memberAbbreviations returns up to n abbreviated member display names and a boolean indicating if there are more.
+func memberAbbreviations(members []ChatMember, n int) ([]string, bool) {
 	var names []string
 	for _, m := range members {
 		if m.DisplayName == nil {
@@ -1294,7 +1302,7 @@ func memberAbbreviations(members []ChatMember, n int) []string {
 	for i := 0; i < len(names) && i < n; i++ {
 		out = append(out, names[i])
 	}
-	return out
+	return out, len(names) > n
 }
 
 // abbreviateName converts "Matt Davidson" → "Matt D", single word stays as-is.

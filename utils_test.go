@@ -254,4 +254,94 @@ func TestHTMLToTextMentions(t *testing.T) {
 	}
 }
 
+func TestComputeDisplayName(t *testing.T) {
+	strPtr := func(s string) *string { return &s }
+
+	tests := []struct {
+		name     string
+		chat     Chat
+		expected string
+	}{
+		{
+			name: "One-on-one chat",
+			chat: Chat{
+				ChatType: "oneOnOne",
+				Members: []ChatMember{
+					{DisplayName: strPtr("Alice Smith")},
+				},
+			},
+			expected: "Alice Smith",
+		},
+		{
+			name: "Group chat with topic",
+			chat: Chat{
+				ChatType: "group",
+				Topic:    strPtr("Project Alpha"),
+				Members: []ChatMember{
+					{DisplayName: strPtr("Alice Smith")},
+					{DisplayName: strPtr("Bob Jones")},
+				},
+			},
+			expected: "Project Alpha",
+		},
+		{
+			name: "Group chat with 2 members",
+			chat: Chat{
+				ChatType: "group",
+				Members: []ChatMember{
+					{DisplayName: strPtr("Alice Smith")},
+					{DisplayName: strPtr("Bob Jones")},
+				},
+			},
+			expected: "Alice S, Bob J",
+		},
+		{
+			name: "Group chat with 3 members",
+			chat: Chat{
+				ChatType: "group",
+				Members: []ChatMember{
+					{DisplayName: strPtr("Alice Smith")},
+					{DisplayName: strPtr("Bob Jones")},
+					{DisplayName: strPtr("Charlie Brown")},
+				},
+			},
+			expected: "Alice S, Bob J, Charlie B",
+		},
+		{
+			name: "Group chat with 4 members",
+			chat: Chat{
+				ChatType: "group",
+				Members: []ChatMember{
+					{DisplayName: strPtr("Alice Smith")},
+					{DisplayName: strPtr("Bob Jones")},
+					{DisplayName: strPtr("Charlie Brown")},
+					{DisplayName: strPtr("David Miller")},
+				},
+			},
+			expected: "Alice S, Bob J, Charlie B ...",
+		},
+		{
+			name: "Group chat with some nil DisplayNames",
+			chat: Chat{
+				ChatType: "group",
+				Members: []ChatMember{
+					{DisplayName: strPtr("Alice Smith")},
+					{DisplayName: nil},
+					{DisplayName: strPtr("Bob Jones")},
+				},
+			},
+			expected: "Alice S, Bob J",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := computeDisplayName(&tt.chat)
+			if result != tt.expected {
+				t.Errorf("expected %q, got %q", tt.expected, result)
+			}
+		})
+	}
+}
+
 
