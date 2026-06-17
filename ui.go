@@ -4669,8 +4669,9 @@ func (m *Model) notifyReaction(chat Chat, msg *Message, newReactions []MessageRe
 		msgBody = stripANSI(msgBody)
 		msgBody = strings.ReplaceAll(msgBody, "\n", " ")
 		msgBody = strings.Join(strings.Fields(msgBody), " ")
-		if len(msgBody) > 40 {
-			msgBody = string([]rune(msgBody)[:40]) + "..."
+		runes := []rune(msgBody)
+		if len(runes) > 40 {
+			msgBody = string(runes[:40]) + "..."
 		}
 
 		title := fmt.Sprintf("TeamsTUI: %s", reactorName)
