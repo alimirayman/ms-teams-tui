@@ -1380,14 +1380,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cursor := getCursorPos(m.textarea)
 		startIdx, query, ok := getMentionQuery(val, cursor)
 		if ok {
-			if !m.app.MentionPopupMode {
-				m.app.MentionScrollOffset = 0
+			if startIdx == m.app.MentionCanceledStartIndex {
+				m.app.MentionPopupMode = false
+				m.app.MentionSuggestions = nil
+			} else {
+				m.app.MentionCanceledStartIndex = -1
+				if !m.app.MentionPopupMode {
+					m.app.MentionScrollOffset = 0
+				}
+				m.app.MentionPopupMode = true
+				m.app.MentionSearch = query
+				m.app.MentionStartIndex = startIdx
+				m = m.rebuildMentionSuggestions()
 			}
-			m.app.MentionPopupMode = true
-			m.app.MentionSearch = query
-			m.app.MentionStartIndex = startIdx
-			m = m.rebuildMentionSuggestions()
 		} else {
+			m.app.MentionCanceledStartIndex = -1
 			m.app.MentionPopupMode = false
 			m.app.MentionSuggestions = nil
 		}
@@ -1816,6 +1823,7 @@ func (m Model) handleInputModeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 			m.app.MentionPopupMode = false
 			m.app.MentionSuggestions = nil
 			m.app.SkipTextareaUpdate = true
+			m.app.MentionCanceledStartIndex = m.app.MentionStartIndex
 			return m, nil
 
 		case "up", "shift+tab":

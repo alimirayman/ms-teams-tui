@@ -173,23 +173,22 @@ type App struct {
 	ChannelMsgRefreshMin  int
 	ExternalEditor        string // command/path for the external editor
 
-
-
 	// ── Mention Popup Autocomplete ───────────────────────────────────────
-	MentionPopupMode      bool
-	MentionSearch         string
-	MentionSelectedIndex   int
-	MentionScrollOffset    int
-	MentionSuggestions     []ChatMember
-	MentionStartIndex      int
-	TeamMembersCache      map[string][]ChatMember
+	MentionPopupMode          bool
+	MentionSearch             string
+	MentionSelectedIndex      int
+	MentionScrollOffset       int
+	MentionSuggestions        []ChatMember
+	MentionStartIndex         int
+	MentionCanceledStartIndex int
+	TeamMembersCache          map[string][]ChatMember
 
 	// ── Help popup ───────────────────────────────────────────────────────
 	HelpPopupMode    bool
 	HelpScrollOffset int
 
 	// ── Composed images (pasted from clipboard) ──────────────────────────
-	ComposedImages []PastedImage
+	ComposedImages     []PastedImage
 	SkipTextareaUpdate bool
 }
 
@@ -213,21 +212,22 @@ type SearchPopupItem struct {
 // NewApp creates an App with sensible initial defaults.
 func NewApp() *App {
 	return &App{
-		Status:                  "Loading...",
-		SnapToBottom:            true,
-		NotificationMode:        NotificationNone,
-		NotificationShowPreview: false,
-		NotificationPreviewLen:  50,
-		HistoryMessages:         make(map[string][]Message),
-		HistoryNextLink:         make(map[string]string),
-		HistoryInitialized:      make(map[string]bool),
-		SearchStates:            make(map[string]*ChatSearchState),
-		CachedMessages:          make(map[string][]Message),
-		CachedNextLink:          make(map[string]string),
-		TeamMembersCache:        make(map[string][]ChatMember),
-		ChatIconTheme:           "unicode",
-		CustomChatIcons:         make(map[string]string),
-		AppStartTime:            time.Now(),
+		Status:                    "Loading...",
+		SnapToBottom:              true,
+		NotificationMode:          NotificationNone,
+		NotificationShowPreview:   false,
+		NotificationPreviewLen:    50,
+		HistoryMessages:           make(map[string][]Message),
+		HistoryNextLink:           make(map[string]string),
+		HistoryInitialized:        make(map[string]bool),
+		SearchStates:              make(map[string]*ChatSearchState),
+		CachedMessages:            make(map[string][]Message),
+		CachedNextLink:            make(map[string]string),
+		TeamMembersCache:          make(map[string][]ChatMember),
+		ChatIconTheme:             "unicode",
+		CustomChatIcons:           make(map[string]string),
+		AppStartTime:              time.Now(),
+		MentionCanceledStartIndex: -1,
 	}
 }
 
