@@ -70,6 +70,7 @@ func (n *NotificationMode) UnmarshalJSON(data []byte) error {
 type FeatureFlags struct {
 	FilePreview           bool // requires Files.Read
 	FilePreviewInTerminal bool // show image in terminal if FilePreview is enabled
+	FileUpload            bool // requires Files.ReadWrite
 	Presence              bool // requires Presence.Read.All
 	UserProfile           bool // requires User.ReadBasic.All (or User.Read.All if Extended)
 	ProfileExtended       bool // requires User.Read.All (admin consent)
@@ -187,9 +188,21 @@ type App struct {
 	HelpPopupMode    bool
 	HelpScrollOffset int
 
+	// ── File Picker popup ────────────────────────────────────────────────
+	FilePickerPopupMode bool
+
 	// ── Composed images (pasted from clipboard) ──────────────────────────
 	ComposedImages     []PastedImage
+	ComposedFiles      []PendingFile
 	SkipTextareaUpdate bool
+}
+
+// PendingFile represents a file selected from the file system.
+type PendingFile struct {
+	Name        string
+	Path        string
+	Data        []byte
+	ContentType string
 }
 
 // ChatSearchState holds the search-specific query and viewport navigation state for a chat.

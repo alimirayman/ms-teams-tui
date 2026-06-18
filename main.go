@@ -5,7 +5,9 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
+	"strings"
 
 	"time"
 
@@ -159,49 +161,49 @@ func createChatCmd(clientID, myUserID, otherUPN string) tea.Cmd {
 }
 
 // sendMessageCmd sends a message to a chat in the background.
-func sendMessageCmd(clientID, chatID, content string, members []ChatMember, images []PastedImage) tea.Cmd {
+func sendMessageCmd(clientID, chatID, content string, members []ChatMember, images []PastedImage, files []PendingFile) tea.Cmd {
 	return func() tea.Msg {
 		token, err := GetValidTokenSilent(clientID)
 		if err != nil {
 			return MsgSendDone{Err: err}
 		}
-		err = SendMessage(token, chatID, content, members, images)
+		err = SendMessage(token, chatID, content, members, images, files)
 		return MsgSendDone{Err: err}
 	}
 }
 
 // sendChannelMessageCmd sends a message to a Teams channel in the background.
-func sendChannelMessageCmd(clientID, teamID, channelID, content string, members []ChatMember, images []PastedImage) tea.Cmd {
+func sendChannelMessageCmd(clientID, teamID, channelID, content string, members []ChatMember, images []PastedImage, files []PendingFile) tea.Cmd {
 	return func() tea.Msg {
 		token, err := GetValidTokenSilent(clientID)
 		if err != nil {
 			return MsgSendDone{Err: err}
 		}
-		err = SendChannelMessage(token, teamID, channelID, content, members, images)
+		err = SendChannelMessage(token, teamID, channelID, content, members, images, files)
 		return MsgSendDone{Err: err}
 	}
 }
 
 // sendChannelReplyCmd posts a reply into an existing Teams channel thread.
-func sendChannelReplyCmd(clientID, teamID, channelID, rootMsgID, content string, members []ChatMember, images []PastedImage) tea.Cmd {
+func sendChannelReplyCmd(clientID, teamID, channelID, rootMsgID, content string, members []ChatMember, images []PastedImage, files []PendingFile) tea.Cmd {
 	return func() tea.Msg {
 		token, err := GetValidTokenSilent(clientID)
 		if err != nil {
 			return MsgSendDone{Err: err}
 		}
-		err = SendChannelReply(token, teamID, channelID, rootMsgID, content, members, images)
+		err = SendChannelReply(token, teamID, channelID, rootMsgID, content, members, images, files)
 		return MsgSendDone{Err: err}
 	}
 }
 
 // sendMessageWithRefCmd sends a reply message with a Teams messageReference attachment.
-func sendMessageWithRefCmd(clientID, chatID, content string, ref *Message, members []ChatMember, images []PastedImage) tea.Cmd {
+func sendMessageWithRefCmd(clientID, chatID, content string, ref *Message, members []ChatMember, images []PastedImage, files []PendingFile) tea.Cmd {
 	return func() tea.Msg {
 		token, err := GetValidTokenSilent(clientID)
 		if err != nil {
 			return MsgSendDone{Err: err}
 		}
-		err = SendMessageWithReference(token, chatID, ref, content, members, images)
+		err = SendMessageWithReference(token, chatID, ref, content, members, images, files)
 		return MsgSendDone{Err: err}
 	}
 }
@@ -436,6 +438,37 @@ func openExternalEditorCmd(currentText, editorCmd string) tea.Cmd {
 	})
 }
 
+// attachFileFromFilepathCmd asynchronously reads a file from disk, detects its content type,
+// and returns MsgFileAttached.
+func attachFileFromFilepathCmd(path string) tea.Cmd {
+	return func() tea.Msg {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return MsgFileAttached{Err: err}
+		}
+
+		filename := filepath.Base(path)
+		contentType := http.DetectContentType(data)
+
+		// DetectContentType can be generic; map common extension overrides for accuracy
+		ext := strings.ToLower(filepath.Ext(filename))
+		switch ext {
+		case ".png":
+			contentType = "image/png"
+		case ".jpg", ".jpeg":
+			contentType = "image/jpeg"
+		case ".gif":
+			contentType = "image/gif"
+		}
+
+		return MsgFileAttached{
+			Name:        filename,
+			ContentType: contentType,
+			Data:        data,
+		}
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Desktop notification
 // ---------------------------------------------------------------------------
@@ -601,6 +634,7 @@ func main() {
 	app.Features = FeatureFlags{
 		FilePreview:           ResolveFeatureFilePreview(),
 		FilePreviewInTerminal: ResolveFeatureFilePreview() && ResolveFeatureFilePreviewInTerminal(),
+		FileUpload:            ResolveFeatureFileUpload(),
 		Presence:              ResolveFeaturePresence(),
 		UserProfile:           ResolveFeatureUserProfile(),
 		ProfileExtended:       ResolveFeatureUserProfileExtended(),

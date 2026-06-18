@@ -34,6 +34,7 @@ Authenticates via **OAuth2 Device Code Flow** (no browser redirect needed), fetc
 **Optional features** (enable per-feature in `config.json`; see [AZURE_SETUP.md](AZURE_SETUP.md)):
 - 📎 **File Preview & Download** (`file_preview_enabled`) — Tab through attachments in the message popup and press Enter to download them to `~/Downloads/`
   - **Terminal Image Preview** (`file_preview_in_terminal`) — Displays the highlighted image attachment directly inside the details popup on the right side using the Kitty Graphics Protocol (requires `file_preview_enabled: true`)
+- ⬆️ **File Browsing & Uploading** (`file_upload_enabled`) — Press `Ctrl+f` in compose mode to open a file browser and attach small files (up to 50MB) from your computer. Files are uploaded to OneDrive/SharePoint and attached to your message.
 - 🟢 **User Presence** (`presence_enabled`) — press `p` in message selection mode to see real-time availability of the message sender
 - 👤 **User Profile** (`user_profile_enabled`) — press `i` in message selection mode to view extended profile info (name, email, job title, department)
 - 🏢 **Teams Channels** (`teams_channels_enabled`) — Teams channels appear in the main sidebar below your chats; navigate with `j`/`k` and read messages just like chats. Supports background polling, global activity sorting (most active unhidden channels on top), unread indicators, and user-toggleable hidden channels (press `h` to toggle).
@@ -194,6 +195,7 @@ Each feature is disabled by default and requires an additional Graph API permiss
   "sqlite_enabled": false,
   "file_preview_enabled": true,
   "file_preview_in_terminal": false,
+  "file_upload_enabled": false,
   "presence_enabled": true,
   "user_profile_enabled": true,
   "user_profile_extended": false,
@@ -207,6 +209,7 @@ Each feature is disabled by default and requires an additional Graph API permiss
 | `sqlite_enabled` | `false` | - | Enables offline caching via SQLite (`~/.cache/teams-tui-go/teams-tui-go.db`). Instantly loads messages when entering chats/channels, syncing updates in the background. |
 | `file_preview_enabled` | `false` | `Files.Read` | Tab through attachments in the `v` popup and press Enter to download to `~/Downloads/` |
 | `file_preview_in_terminal` | `false` | `Files.Read` | Previews the highlighted image attachment inside the details popup on the right side using the Kitty Graphics Protocol (requires `file_preview_enabled: true`) |
+| `file_upload_enabled` | `false` | `Files.ReadWrite` | Press `Ctrl+f` in compose mode to open a file browser and attach files under 4MB from the computer |
 | `presence_enabled` | `false` | `Presence.Read.All` | Press `p` in message selection mode to see sender availability |
 | `user_profile_enabled` | `false` | `User.ReadBasic.All` | Press `i` in message selection mode to view sender's profile |
 | `user_profile_extended` | `false` | `User.Read.All` *(admin consent)* | Adds job title, department, office to the profile popup (requires `user_profile_enabled: true`) |
@@ -290,6 +293,15 @@ When in compose mode (`i`), you can paste images (PNG/JPEG) directly from your s
 > [!NOTE]
 > On Linux, `Ctrl+Shift+V` is intercepted by most terminal emulators to perform text-only paste. To paste clipboard images, make sure to use **`Ctrl+V`** instead, which is passed directly to the TUI.
 
+### File Browsing & Uploading
+
+When `file_upload_enabled` is set to `true` in `config.json`, you can attach small files (under 4MB) from your local computer to chat or channel messages.
+- In compose mode (`i`), press **`Ctrl+f`** to open the offline file browser overlay.
+- Navigate directories using `j`/`k` (or arrow keys) and enter directories with `Enter`. Move to parent directories via `..`.
+- Highlight a file and press **`Enter`** to select and attach it.
+- A placeholder like `[File: filename.ext]` is inserted into the textarea. You can move, copy, or delete it to control inline message rendering.
+- When sending the message, files are automatically uploaded to OneDrive (for chats) or SharePoint (for channels) and attached as reference attachments to the message.
+
 ### External Editor Composing
 
 When in compose mode (`i`), you can press **`Ctrl+g`** to open an external editor (such as `vim`) to compose or edit your message:
@@ -315,6 +327,7 @@ When in compose mode (`i`), you can press **`Ctrl+g`** to open an external edito
 | `h`          | Toggle hide/unhide on selected channel (channels only)    |
 | `i`          | Enter compose mode                                        |
 | `Ctrl+V`     | Paste image from clipboard (in Compose Mode)              |
+| `Ctrl+f`     | Browse and attach file from computer (in Compose Mode)    |
 | `Ctrl+g`     | Compose/edit message in external editor (in Compose Mode)|
 | `Enter`      | Send message                                              |
 | `Alt+Enter`  | New line in message                                       |

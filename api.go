@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -378,6 +379,183 @@ func graphPost(accessToken, path string, payload any) error {
 	return nil
 }
 
+// graphPut performs an authenticated PUT request against the Graph API.
+func graphPut(accessToken, path string, content []byte, contentType string) ([]byte, error) {
+	req, err := http.NewRequest(http.MethodPut, graphAPIBase+path, bytes.NewReader(content))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("Content-Type", contentType)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("PUT %s: %w", path, err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read response body: %w", err)
+	}
+
+	if resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("PUT %s: HTTP %d: %s", path, resp.StatusCode, body)
+	}
+	return body, nil
+}
+
+// DriveItem represents a file or folder inside OneDrive or SharePoint.
+type DriveItem struct {
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	WebURL string `json:"webUrl"`
+	ETag   string `json:"eTag"`
+}
+
+// ChannelFilesFolder represents the response when getting a channel's files folder.
+type ChannelFilesFolder struct {
+	ID              string `json:"id"`
+	Name            string `json:"name"`
+	ParentReference struct {
+		DriveID string `json:"driveId"`
+	} `json:"parentReference"`
+}
+
+// uploadFileInSession handles uploading large files using upload sessions.
+func uploadFileInSession(accessToken, createSessionURL string, content []byte) (*DriveItem, error) {
+	payload := map[string]any{
+		"item": map[string]any{
+			"@microsoft.graph.conflictBehavior": "rename",
+		},
+	}
+	sessionBody, err := graphPostWithResponse(accessToken, createSessionURL, payload)
+	if err != nil {
+		return nil, fmt.Errorf("create upload session: %w", err)
+	}
+
+	var sessionRes struct {
+		UploadURL string `json:"uploadUrl"`
+	}
+	if err := json.Unmarshal(sessionBody, &sessionRes); err != nil {
+		return nil, fmt.Errorf("unmarshal upload session response: %w", err)
+	}
+	if sessionRes.UploadURL == "" {
+		return nil, fmt.Errorf("empty upload URL in response")
+	}
+
+	totalSize := len(content)
+	// Chunk size must be a multiple of 320 KiB (327680 bytes)
+	// Let's upload in 3.125 MB chunks
+	chunkSize := 3276800
+	offset := 0
+
+	var finalBody []byte
+
+	for offset < totalSize {
+		end := offset + chunkSize
+		if end > totalSize {
+			end = totalSize
+		}
+
+		chunk := content[offset:end]
+		req, err := http.NewRequest(http.MethodPut, sessionRes.UploadURL, bytes.NewReader(chunk))
+		if err != nil {
+			return nil, fmt.Errorf("create PUT chunk request: %w", err)
+		}
+
+		req.Header.Set("Content-Length", fmt.Sprintf("%d", len(chunk)))
+		req.Header.Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", offset, end-1, totalSize))
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("upload chunk bytes %d-%d: %w", offset, end-1, err)
+		}
+		defer resp.Body.Close()
+
+		resBytes, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return nil, fmt.Errorf("read chunk response body: %w", err)
+		}
+
+		if resp.StatusCode >= 300 {
+			return nil, fmt.Errorf("chunk upload HTTP %d: %s", resp.StatusCode, string(resBytes))
+		}
+
+		finalBody = resBytes
+		offset = end
+	}
+
+	var item DriveItem
+	if err := json.Unmarshal(finalBody, &item); err != nil {
+		return nil, fmt.Errorf("unmarshal DriveItem from final chunk: %w", err)
+	}
+
+	return &item, nil
+}
+
+// UploadChatFile uploads a file to the user's OneDrive Teams Chat Files folder.
+// Uses simple upload for files <= 4MB, and upload sessions for larger files.
+func UploadChatFile(accessToken, filename string, content []byte) (*DriveItem, error) {
+	escapedFilename := url.PathEscape(filename)
+	if len(content) <= 4*1024*1024 {
+		path := fmt.Sprintf("/me/drive/root:/Microsoft Teams Chat Files/%s:/content", escapedFilename)
+		contentType := http.DetectContentType(content)
+		body, err := graphPut(accessToken, path, content, contentType)
+		if err != nil {
+			return nil, fmt.Errorf("upload to OneDrive (simple): %w", err)
+		}
+		var item DriveItem
+		if err := json.Unmarshal(body, &item); err != nil {
+			return nil, fmt.Errorf("unmarshal DriveItem: %w", err)
+		}
+		return &item, nil
+	}
+
+	// Use upload session for files > 4MB
+	createSessionURL := fmt.Sprintf("/me/drive/root:/Microsoft Teams Chat Files/%s:/createUploadSession", escapedFilename)
+	return uploadFileInSession(accessToken, createSessionURL, content)
+}
+
+// GetChannelFilesFolder retrieves the files folder driveItem metadata for a Teams channel.
+func GetChannelFilesFolder(accessToken, teamID, channelID string) (*ChannelFilesFolder, error) {
+	path := fmt.Sprintf("/teams/%s/channels/%s/filesFolder", teamID, channelID)
+	body, err := graphGet(accessToken, path)
+	if err != nil {
+		return nil, fmt.Errorf("get channel files folder: %w", err)
+	}
+
+	var folder ChannelFilesFolder
+	if err := json.Unmarshal(body, &folder); err != nil {
+		return nil, fmt.Errorf("unmarshal ChannelFilesFolder: %w", err)
+	}
+
+	return &folder, nil
+}
+
+// UploadChannelFile uploads a file to a Teams channel's files folder in SharePoint.
+// Uses simple upload for files <= 4MB, and upload sessions for larger files.
+func UploadChannelFile(accessToken, driveID, folderID, filename string, content []byte) (*DriveItem, error) {
+	escapedFilename := url.PathEscape(filename)
+	if len(content) <= 4*1024*1024 {
+		path := fmt.Sprintf("/drives/%s/items/%s:/%s:/content", driveID, folderID, escapedFilename)
+		contentType := http.DetectContentType(content)
+		body, err := graphPut(accessToken, path, content, contentType)
+		if err != nil {
+			return nil, fmt.Errorf("upload to SharePoint (simple): %w", err)
+		}
+		var item DriveItem
+		if err := json.Unmarshal(body, &item); err != nil {
+			return nil, fmt.Errorf("unmarshal DriveItem: %w", err)
+		}
+		return &item, nil
+	}
+
+	// Use upload session for files > 4MB
+	createSessionURL := fmt.Sprintf("/drives/%s/items/%s:/%s:/createUploadSession", driveID, folderID, escapedFilename)
+	return uploadFileInSession(accessToken, createSessionURL, content)
+}
+
 // graphPatch performs an authenticated PATCH request against the Graph API.
 func graphPatch(accessToken, path string, payload any) error {
 	data, err := json.Marshal(payload)
@@ -708,13 +886,105 @@ func formatMessageBody(content string, members []ChatMember) (map[string]any, []
 	}, mentions
 }
 
-// formatMessageBodyWithImages prepares the payload body and hosted contents for inline images.
-func formatMessageBodyWithImages(content string, members []ChatMember, images []PastedImage) (map[string]any, []map[string]any, []map[string]any) {
-	if len(images) == 0 {
-		body, mentions := formatMessageBody(content, members)
-		return body, mentions, nil
+func generateGUID() string {
+	b := make([]byte, 16)
+	_, _ = rand.Read(b)
+	b[6] = (b[6] & 0x0f) | 0x40
+	b[8] = (b[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
+}
+
+func extractGUIDFromETag(eTag string) string {
+	re := regexp.MustCompile(`[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}`)
+	match := re.FindString(eTag)
+	if match != "" {
+		return strings.ToLower(match)
+	}
+	return ""
+}
+
+func shareOneDriveFileWithMembers(accessToken, itemID string, members []ChatMember) error {
+	var recipients []map[string]any
+	for _, m := range members {
+		if m.Email != nil && *m.Email != "" {
+			recipients = append(recipients, map[string]any{
+				"email": *m.Email,
+			})
+		}
+	}
+	if len(recipients) == 0 {
+		return nil
 	}
 
+	payload := map[string]any{
+		"recipients":     recipients,
+		"roles":          []string{"read"},
+		"sendInvitation": false,
+		"requireSignIn":  true,
+	}
+
+	path := fmt.Sprintf("/me/drive/items/%s/invite", itemID)
+	err := graphPost(accessToken, path, payload)
+	if err != nil {
+		return fmt.Errorf("invite members: %w", err)
+	}
+	return nil
+}
+
+// uploadChatFiles uploads multiple small files to OneDrive and returns reference attachments.
+func uploadChatFiles(accessToken string, files []PendingFile, members []ChatMember) ([]MessageAttachment, error) {
+	var refAttachments []MessageAttachment
+	for _, f := range files {
+		item, err := UploadChatFile(accessToken, f.Name, f.Data)
+		if err != nil {
+			return nil, fmt.Errorf("upload to OneDrive: %w", err)
+		}
+		if err := shareOneDriveFileWithMembers(accessToken, item.ID, members); err != nil {
+			return nil, fmt.Errorf("share OneDrive file: %w", err)
+		}
+		guid := extractGUIDFromETag(item.ETag)
+		if guid == "" {
+			guid = generateGUID()
+		}
+		refAttachments = append(refAttachments, MessageAttachment{
+			ID:         guid,
+			Name:       &f.Name,
+			ContentURL: &item.WebURL,
+		})
+	}
+	return refAttachments, nil
+}
+
+// uploadChannelFiles uploads multiple small files to SharePoint and returns reference attachments.
+func uploadChannelFiles(accessToken, teamID, channelID string, files []PendingFile) ([]MessageAttachment, error) {
+	var refAttachments []MessageAttachment
+	if len(files) == 0 {
+		return nil, nil
+	}
+	folder, err := GetChannelFilesFolder(accessToken, teamID, channelID)
+	if err != nil {
+		return nil, fmt.Errorf("get channel folder: %w", err)
+	}
+	for _, f := range files {
+		item, err := UploadChannelFile(accessToken, folder.ParentReference.DriveID, folder.ID, f.Name, f.Data)
+		if err != nil {
+			return nil, fmt.Errorf("upload to SharePoint: %w", err)
+		}
+		guid := extractGUIDFromETag(item.ETag)
+		if guid == "" {
+			guid = generateGUID()
+		}
+		refAttachments = append(refAttachments, MessageAttachment{
+			ID:         guid,
+			Name:       &f.Name,
+			ContentURL: &item.WebURL,
+		})
+	}
+	return refAttachments, nil
+}
+
+// formatMessageBodyWithImagesAndFiles prepares the payload body and attachments for inline images and file references.
+func formatMessageBodyWithImagesAndFiles(content string, members []ChatMember, images []PastedImage, referenceAttachments []MessageAttachment) (map[string]any, []map[string]any, []map[string]any, []map[string]any) {
 	var htmlContent string
 	if containsMarkdown(content) || strings.Contains(content, "\n") || strings.HasPrefix(content, " ") || strings.HasPrefix(content, "\t") || containsURL(content) {
 		htmlContent = markdownToHTML(content)
@@ -727,9 +997,10 @@ func formatMessageBodyWithImages(content string, members []ChatMember, images []
 	var hostedContents []map[string]any
 	usedImages := make(map[int]bool)
 
-	re := regexp.MustCompile(`\[[Ii]mage\s+(\d+)\]`)
-	replacedContent := re.ReplaceAllStringFunc(htmlContent, func(match string) string {
-		sub := re.FindStringSubmatch(match)
+	// Replace [Image N] with hostedContents reference
+	reImg := regexp.MustCompile(`\[[Ii]mage\s+(\d+)\]`)
+	htmlContent = reImg.ReplaceAllStringFunc(htmlContent, func(match string) string {
+		sub := reImg.FindStringSubmatch(match)
 		if len(sub) < 2 {
 			return match
 		}
@@ -754,17 +1025,42 @@ func formatMessageBodyWithImages(content string, members []ChatMember, images []
 		}
 	}
 
-	bodyPayload := map[string]any{
-		"contentType": "html",
-		"content":     replacedContent,
+	// Handle reference attachments
+	var attachmentsPayload []map[string]any
+	for _, att := range referenceAttachments {
+		attachmentsPayload = append(attachmentsPayload, map[string]any{
+			"id":          att.ID,
+			"contentType": "reference",
+			"contentUrl":  *att.ContentURL,
+			"name":        *att.Name,
+		})
+
+		// Replace [File: filename] inline or append to the bottom
+		pattern := fmt.Sprintf(`\[[Ff]ile:\s*%s\]`, regexp.QuoteMeta(*att.Name))
+		reFile := regexp.MustCompile(pattern)
+		if reFile.MatchString(htmlContent) {
+			htmlContent = reFile.ReplaceAllString(htmlContent, fmt.Sprintf(`<attachment id="%s"></attachment>`, att.ID))
+		} else {
+			htmlContent += fmt.Sprintf(`<br /><attachment id="%s"></attachment>`, att.ID)
+		}
 	}
 
-	return bodyPayload, mentions, hostedContents
+	bodyPayload := map[string]any{
+		"contentType": "html",
+		"content":     htmlContent,
+	}
+
+	return bodyPayload, mentions, hostedContents, attachmentsPayload
 }
 
 // SendMessage posts a message to the given chat.
-func SendMessage(accessToken, chatID, content string, members []ChatMember, images []PastedImage) error {
-	body, mentions, hostedContents := formatMessageBodyWithImages(content, members, images)
+func SendMessage(accessToken, chatID, content string, members []ChatMember, images []PastedImage, files []PendingFile) error {
+	refAttachments, err := uploadChatFiles(accessToken, files, members)
+	if err != nil {
+		return err
+	}
+
+	body, mentions, hostedContents, attachments := formatMessageBodyWithImagesAndFiles(content, members, images, refAttachments)
 	payload := map[string]any{
 		"body": body,
 	}
@@ -773,14 +1069,22 @@ func SendMessage(accessToken, chatID, content string, members []ChatMember, imag
 	}
 	if len(hostedContents) > 0 {
 		payload["hostedContents"] = hostedContents
+	}
+	if len(attachments) > 0 {
+		payload["attachments"] = attachments
 	}
 	return graphPost(accessToken, "/chats/"+chatID+"/messages", payload)
 }
 
 // SendChannelMessage posts a new message to a Teams channel.
 // Requires ChannelMessage.Read.All delegated permission.
-func SendChannelMessage(accessToken, teamID, channelID, content string, members []ChatMember, images []PastedImage) error {
-	body, mentions, hostedContents := formatMessageBodyWithImages(content, members, images)
+func SendChannelMessage(accessToken, teamID, channelID, content string, members []ChatMember, images []PastedImage, files []PendingFile) error {
+	refAttachments, err := uploadChannelFiles(accessToken, teamID, channelID, files)
+	if err != nil {
+		return err
+	}
+
+	body, mentions, hostedContents, attachments := formatMessageBodyWithImagesAndFiles(content, members, images, refAttachments)
 	payload := map[string]any{
 		"body": body,
 	}
@@ -789,6 +1093,9 @@ func SendChannelMessage(accessToken, teamID, channelID, content string, members 
 	}
 	if len(hostedContents) > 0 {
 		payload["hostedContents"] = hostedContents
+	}
+	if len(attachments) > 0 {
+		payload["attachments"] = attachments
 	}
 	return graphPost(accessToken, fmt.Sprintf("/teams/%s/channels/%s/messages", teamID, channelID), payload)
 }
@@ -796,8 +1103,13 @@ func SendChannelMessage(accessToken, teamID, channelID, content string, members 
 // SendChannelReply posts a reply into an existing Teams channel thread.
 // rootMsgID is the ID of the root (top-level) message in the thread.
 // Requires ChannelMessage.Send delegated permission.
-func SendChannelReply(accessToken, teamID, channelID, rootMsgID, content string, members []ChatMember, images []PastedImage) error {
-	body, mentions, hostedContents := formatMessageBodyWithImages(content, members, images)
+func SendChannelReply(accessToken, teamID, channelID, rootMsgID, content string, members []ChatMember, images []PastedImage, files []PendingFile) error {
+	refAttachments, err := uploadChannelFiles(accessToken, teamID, channelID, files)
+	if err != nil {
+		return err
+	}
+
+	body, mentions, hostedContents, attachments := formatMessageBodyWithImagesAndFiles(content, members, images, refAttachments)
 	payload := map[string]any{
 		"body": body,
 	}
@@ -807,14 +1119,22 @@ func SendChannelReply(accessToken, teamID, channelID, rootMsgID, content string,
 	if len(hostedContents) > 0 {
 		payload["hostedContents"] = hostedContents
 	}
+	if len(attachments) > 0 {
+		payload["attachments"] = attachments
+	}
 	return graphPost(accessToken, fmt.Sprintf("/teams/%s/channels/%s/messages/%s/replies", teamID, channelID, rootMsgID), payload)
 }
 
 // SendMessageWithReference posts a reply-to-message using a Teams messageReference
 // attachment, making it appear as a proper quoted reply in the Teams client.
-func SendMessageWithReference(accessToken, chatID string, ref *Message, content string, members []ChatMember, images []PastedImage) error {
+func SendMessageWithReference(accessToken, chatID string, ref *Message, content string, members []ChatMember, images []PastedImage, files []PendingFile) error {
+	refAttachments, err := uploadChatFiles(accessToken, files, members)
+	if err != nil {
+		return err
+	}
+
 	if ref == nil {
-		return SendMessage(accessToken, chatID, content, members, images)
+		return SendMessage(accessToken, chatID, content, members, images, files)
 	}
 
 	// Build the sender JSON for the attachment content field.
@@ -857,21 +1177,24 @@ func SendMessageWithReference(accessToken, chatID string, ref *Message, content 
 	// The body MUST be HTML and MUST contain <attachment id="..."></attachment> as a
 	// placeholder so Teams knows where to render the quote bubble.
 	marker := fmt.Sprintf(`<attachment id="%s"></attachment>`, ref.ID)
-	body, mentions, hostedContents := formatMessageBodyWithImages(content, members, images)
+	body, mentions, hostedContents, attachments := formatMessageBodyWithImagesAndFiles(content, members, images, refAttachments)
 	bodyHTML := marker + "\n" + body["content"].(string)
+
+	// Merge the message reference attachment with any file reference attachments
+	var finalAttachments []map[string]any
+	finalAttachments = append(finalAttachments, map[string]any{
+		"id":          ref.ID,
+		"contentType": "messageReference",
+		"content":     string(attContentJSON),
+	})
+	finalAttachments = append(finalAttachments, attachments...)
 
 	payload := map[string]any{
 		"body": map[string]any{
 			"contentType": "html",
 			"content":     bodyHTML,
 		},
-		"attachments": []map[string]any{
-			{
-				"id":          ref.ID,
-				"contentType": "messageReference",
-				"content":     string(attContentJSON),
-			},
-		},
+		"attachments": finalAttachments,
 	}
 	if len(mentions) > 0 {
 		payload["mentions"] = mentions
@@ -2223,6 +2546,9 @@ func DownloadFile(accessToken, fileURL, destPath string) error {
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return fmt.Errorf("DownloadFile: read body: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
+		return fmt.Errorf("DownloadFile: create directories: %w", err)
 	}
 	return os.WriteFile(destPath, data, 0o600)
 }

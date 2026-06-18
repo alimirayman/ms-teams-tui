@@ -12,6 +12,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/atotto/clipboard"
+	"github.com/charmbracelet/bubbles/filepicker"
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbletea"
@@ -56,6 +57,14 @@ var (
 type MsgChatsLoaded struct {
 	Chats           []Chat
 	CurrentUserName *string
+}
+
+// MsgFileAttached is sent when a file has been read from disk.
+type MsgFileAttached struct {
+	Name        string
+	ContentType string
+	Data        []byte
+	Err         error
 }
 
 // MsgMessagesLoaded is sent when messages for a specific chat have loaded.
@@ -267,6 +276,9 @@ type Model struct {
 	// channelSelectedIndex is an index into the flat list returned by allChannels().
 	// -1 means focus is in the chat list (default).
 	channelSelectedIndex int
+
+	// File picker for browsing/attaching files from computer.
+	filepicker filepicker.Model
 }
 
 // NewModel creates the initial Bubble Tea model.
@@ -288,6 +300,19 @@ func NewModel(app *App, clientID, userID string) Model {
 	tiUser.CharLimit = 100
 	tiUser.Width = 40
 
+	fp := filepicker.New()
+	fp.AllowedTypes = []string{} // allow all types
+	fp.FileAllowed = true
+	if home, err := os.UserHomeDir(); err == nil {
+		fp.CurrentDirectory = home
+	}
+	fp.Styles = filepicker.DefaultStyles()
+	fp.Styles.Directory = lipgloss.NewStyle().Foreground(colCyan).Bold(true)
+	fp.Styles.File = lipgloss.NewStyle().Foreground(colWhite)
+	fp.Styles.Cursor = lipgloss.NewStyle().Foreground(colGreen).Bold(true)
+	fp.Styles.Selected = lipgloss.NewStyle().Foreground(colGreen).Bold(true)
+	fp.Styles.Permission = lipgloss.NewStyle().Foreground(colDimGray)
+
 	return Model{
 		app:                  app,
 		clientID:             clientID,
@@ -308,6 +333,7 @@ func NewModel(app *App, clientID, userID string) Model {
 		originalChannelIndex: make(map[string]int),
 		focused:              true,
 		channelSelectedIndex: -1,
+		filepicker:           fp,
 	}
 }
 
@@ -353,6 +379,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		m.textarea.SetWidth(msgPanelWidth(m.width) - 4)
+		popupH := m.height * 80 / 100
+		if popupH < 15 {
+			popupH = 15
+		}
+		m.filepicker.SetHeight(popupH - 6)
 
 	// ── Heartbeat tick ───────────────────────────────────────────────────
 	case MsgTick:
@@ -1085,6 +1116,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Err != nil {
 			m.app.SetStatus("Send error: "+msg.Err.Error(), 5*time.Second)
 		} else {
+			m.app.SetStatus("Sent!", 2*time.Second)
 			// Immediately reload messages after send.
 			if m.channelSelectedIndex >= 0 {
 				// In channel mode — reload the channel messages.
@@ -1334,6 +1366,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.app.TeamMembersCache[msg.TeamID] = msg.Members
 		}
 
+	case MsgFileAttached:
+		if msg.Err != nil {
+			m.app.SetStatus("File read error: "+msg.Err.Error(), 5*time.Second)
+			return m, nil
+		}
+		if len(msg.Data) > 50*1024*1024 {
+			m.app.SetStatus("Error: File exceeds the 50MB limit", 5*time.Second)
+			return m, nil
+		}
+		m.app.ComposedFiles = append(m.app.ComposedFiles, PendingFile{
+			Name:        msg.Name,
+			ContentType: msg.ContentType,
+			Data:        msg.Data,
+		})
+		placeholder := fmt.Sprintf("[File: %s]", msg.Name)
+		m.textarea.InsertString(placeholder)
+		m.app.InputBuffer = m.textarea.Value()
+		m.app.SetStatus("Attached "+msg.Name, 3*time.Second)
+		m.app.SkipTextareaUpdate = true
+		return m, nil
+
 	// ── Keyboard input ────────────────────────────────────────────────────
 	case tea.KeyMsg:
 		m = m.markRead()
@@ -1345,7 +1398,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	// Update textarea if in input mode.
-	if m.app.InputMode && wasInputMode {
+	if m.app.InputMode && wasInputMode && !m.app.FilePickerPopupMode {
 		if m.app.SkipTextareaUpdate {
 			m.app.SkipTextareaUpdate = false
 		} else {
@@ -1422,11 +1475,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	// Update filepicker if in filepicker mode (for non-keyboard messages like directory read results)
+	if m.app.FilePickerPopupMode {
+		if _, ok := msg.(tea.KeyMsg); !ok {
+			var cmd tea.Cmd
+			m.filepicker, cmd = m.filepicker.Update(msg)
+			if cmd != nil {
+				cmds = append(cmds, cmd)
+			}
+		}
+	}
+
 	return m, tea.Batch(cmds...)
 }
 
 // handleKey processes keyboard input and returns the updated model + command.
 func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
+	if m.app.FilePickerPopupMode {
+		return m.handleFilePickerKey(msg)
+	}
 	if m.app.HelpPopupMode {
 		return m.handleHelpPopupKey(msg)
 	}
@@ -1897,6 +1964,7 @@ func (m Model) handleInputModeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		m.app.ReplyToMessage = nil
 		m.app.ChannelReplyToID = ""
 		m.app.ComposedImages = nil
+		m.app.ComposedFiles = nil
 		m.textarea.Reset()
 		return m, nil
 
@@ -1906,6 +1974,13 @@ func (m Model) handleInputModeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 			editorCmd = "vim"
 		}
 		return m, openExternalEditorCmd(m.textarea.Value(), editorCmd)
+
+	case "ctrl+f":
+		if m.app.Features.FileUpload {
+			m.app.FilePickerPopupMode = true
+			return m, m.filepicker.Init()
+		}
+		return m, nil
 
 	case "ctrl+v", "ctrl+shift+v", "ctrl+V":
 		imgBytes, contentType, err := GetClipboardImage()
@@ -1933,6 +2008,18 @@ func (m Model) handleInputModeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 
 		images := m.app.ComposedImages
 		m.app.ComposedImages = nil
+		files := m.app.ComposedFiles
+		m.app.ComposedFiles = nil
+
+		if m.app.EditingMessageID != nil {
+			m.app.SetStatus("Updating message...", 0)
+		} else {
+			sendingMsg := "Sending message..."
+			if len(images) > 0 || len(files) > 0 {
+				sendingMsg = "Uploading files and sending message..."
+			}
+			m.app.SetStatus(sendingMsg, 0)
+		}
 
 		// If we're viewing a Teams channel, send to that channel.
 		if ch := m.activeChannelEntry(); ch != nil {
@@ -1948,9 +2035,9 @@ func (m Model) handleInputModeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 			if m.app.ChannelReplyToID != "" {
 				rootID := m.app.ChannelReplyToID
 				m.app.ChannelReplyToID = ""
-				return m, sendChannelReplyCmd(m.clientID, ch.teamID, ch.channelID, rootID, content, members, images)
+				return m, sendChannelReplyCmd(m.clientID, ch.teamID, ch.channelID, rootID, content, members, images, files)
 			}
-			return m, sendChannelMessageCmd(m.clientID, ch.teamID, ch.channelID, content, members, images)
+			return m, sendChannelMessageCmd(m.clientID, ch.teamID, ch.channelID, content, members, images, files)
 		}
 
 		chat := m.app.GetSelectedChat()
@@ -1966,9 +2053,9 @@ func (m Model) handleInputModeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		if m.app.ReplyToMessage != nil {
 			ref := m.app.ReplyToMessage
 			m.app.ReplyToMessage = nil
-			return m, sendMessageWithRefCmd(m.clientID, chat.ID, content, ref, members, images)
+			return m, sendMessageWithRefCmd(m.clientID, chat.ID, content, ref, members, images, files)
 		}
-		return m, sendMessageCmd(m.clientID, chat.ID, content, members, images)
+		return m, sendMessageCmd(m.clientID, chat.ID, content, members, images, files)
 
 	case "alt+enter", "shift+enter", "ctrl+enter":
 		m.textarea.InsertString("\n")
@@ -2475,6 +2562,17 @@ func (m Model) View() string {
 	if m.app.UrlSelectionMode {
 		modal := m.renderUrlSelection(m.width, m.height)
 		result = lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, modal)
+	} else if m.app.FilePickerPopupMode {
+		popupW := m.width * 85 / 100
+		popupH := m.height * 80 / 100
+		if popupW < 45 {
+			popupW = 45
+		}
+		if popupH < 15 {
+			popupH = 15
+		}
+		modal := m.renderFilePickerPopup(popupW, popupH)
+		result = lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, modal)
 	} else if m.app.UserSearchPopupMode {
 		popupW := m.width * 85 / 100
 		popupH := m.height * 80 / 100
@@ -2738,8 +2836,13 @@ func (m Model) renderRightPanel(w, h int) string {
 	m.textarea.SetHeight(inputH - 2)
 
 	// Build input box contents — add quote preview when replying.
-	hintLine := lipgloss.NewStyle().Foreground(colDimGray).
-		Render("Type your message (Enter to send, Alt+Enter for new line, ESC to cancel, @ to mention, paste IMAGE, Ctrl+g to open external editor)")
+	hintText := "Type your message (Enter: send, Alt+Enter: new line, ESC: cancel, @: mention, paste IMAGE"
+	if m.app.Features.FileUpload {
+		hintText += ", Ctrl+f: attach file"
+	}
+	hintText += ", Ctrl+g: open external editor)"
+
+	hintLine := lipgloss.NewStyle().Foreground(colDimGray).Render(hintText)
 	inputParts := []string{hintLine}
 
 	if m.app.ReplyToMessage != nil {
@@ -5634,6 +5737,7 @@ func (m Model) getHelpContentLines() []string {
 			{"j / k / Tab", "Navigate suggestions (when mention popup is open)"},
 			{"Enter", "Select suggestion (when open) / Send message"},
 			{"Ctrl+v", "Paste image from clipboard"},
+			{"Ctrl+f", "Browse and attach file (feature: file_upload_enabled)"},
 			{"Ctrl+g", "Compose/edit in external editor (e.g. vim)"},
 			{"ESC", "Cancel composing"},
 		}},
@@ -5652,6 +5756,7 @@ func (m Model) getHelpContentLines() []string {
 	contentLines = append(contentLines,
 		fmt.Sprintf("  file_preview_enabled      %s", featureState(m.app.Features.FilePreview)),
 		fmt.Sprintf("  file_preview_in_terminal  %s", featureState(m.app.Features.FilePreviewInTerminal)),
+		fmt.Sprintf("  file_upload_enabled       %s", featureState(m.app.Features.FileUpload)),
 		fmt.Sprintf("  presence_enabled          %s", featureState(m.app.Features.Presence)),
 		fmt.Sprintf("  user_profile_enabled      %s", featureState(m.app.Features.UserProfile)),
 		fmt.Sprintf("  teams_channels_enabled    %s", featureState(m.app.Features.TeamsChannels)),
@@ -5709,6 +5814,25 @@ func (m Model) handleHelpPopupKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		m.clampHelpScrollOffset()
 	}
 	return m, nil
+}
+
+func (m Model) handleFilePickerKey(msg tea.KeyMsg) (Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "q":
+		m.app.FilePickerPopupMode = false
+		return m, nil
+	}
+
+	var cmd tea.Cmd
+	m.filepicker, cmd = m.filepicker.Update(msg)
+
+	if didSelect, path := m.filepicker.DidSelectFile(msg); didSelect {
+		m.app.FilePickerPopupMode = false
+		m.app.SkipTextareaUpdate = true
+		return m, tea.Batch(cmd, attachFileFromFilepathCmd(path))
+	}
+
+	return m, cmd
 }
 
 func (m Model) renderHelpPopup(w, h int) string {
@@ -6264,5 +6388,28 @@ func (m Model) loadChannelMessages(teamID string, channelID string) (Model, tea.
 	m.app.SetLoadingMessages(true)
 	m.app.SnapToBottom = true
 	return m, loadChannelMessagesCmd(m.clientID, teamID, channelID)
+}
+
+func (m Model) renderFilePickerPopup(w, h int) string {
+	dimStyle := lipgloss.NewStyle().Foreground(colDimGray)
+	title := lipgloss.NewStyle().Foreground(colCyan).Bold(true).Render("Select File to Attach")
+
+	currentDir := lipgloss.NewStyle().Foreground(colWhite).Bold(true).Render("Directory: " + m.filepicker.CurrentDirectory)
+
+	var lines []string
+	lines = append(lines, title, currentDir, "")
+
+	// Render the filepicker component
+	lines = append(lines, m.filepicker.View())
+
+	footer := dimStyle.Italic(true).Render("j/k or ↑/↓: Navigate • Enter: Attach • Esc / q: Cancel")
+	lines = append(lines, "", footer)
+
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(colGreen).
+		Padding(1, 2).
+		Width(w).Height(h).
+		Render(strings.Join(lines, "\n"))
 }
 

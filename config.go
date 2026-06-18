@@ -119,6 +119,7 @@ type Config struct {
 	// in the Azure app registration and the cached token refreshed.
 	FilePreviewEnabled    *bool `json:"file_preview_enabled,omitempty"`    // requires Files.Read
 	FilePreviewInTerminal *bool `json:"file_preview_in_terminal,omitempty"` // show image in terminal if file_preview_enabled is true
+	FileUploadEnabled     *bool `json:"file_upload_enabled,omitempty"`     // requires Files.ReadWrite
 	PresenceEnabled       *bool `json:"presence_enabled,omitempty"`        // requires Presence.Read.All
 	UserProfileEnabled    *bool `json:"user_profile_enabled,omitempty"`   // requires User.ReadBasic.All
 	UserProfileExtended   *bool `json:"user_profile_extended,omitempty"`  // requires User.Read.All (admin consent)
@@ -244,6 +245,11 @@ func InitConfig() {
 	if cfg.FilePreviewInTerminal == nil {
 		v := false
 		cfg.FilePreviewInTerminal = &v
+		modified = true
+	}
+	if cfg.FileUploadEnabled == nil {
+		v := false
+		cfg.FileUploadEnabled = &v
 		modified = true
 	}
 	if cfg.PresenceEnabled == nil {
@@ -394,6 +400,12 @@ func ResolveFeatureFilePreviewInTerminal() bool {
 	return cfg != nil && cfg.FilePreviewInTerminal != nil && *cfg.FilePreviewInTerminal
 }
 
+// ResolveFeatureFileUpload returns true when file upload to OneDrive is enabled.
+func ResolveFeatureFileUpload() bool {
+	cfg := LoadConfig()
+	return cfg != nil && cfg.FileUploadEnabled != nil && *cfg.FileUploadEnabled
+}
+
 // ResolveFeaturePresence returns true when user presence status is enabled.
 func ResolveFeaturePresence() bool {
 	cfg := LoadConfig()
@@ -435,7 +447,9 @@ func ResolveFeatureSqlite() bool {
 // Basic scopes are always included; additional scopes are appended for enabled features.
 func BuildScopes() string {
 	base := "User.Read Chat.ReadWrite offline_access"
-	if ResolveFeatureFilePreview() {
+	if ResolveFeatureFileUpload() {
+		base += " Files.ReadWrite"
+	} else if ResolveFeatureFilePreview() {
 		base += " Files.Read"
 	}
 	if ResolveFeaturePresence() {

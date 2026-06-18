@@ -100,6 +100,23 @@ Key binding: In the message view popup (`v`), press **Tab** to enter attachment 
 
 ---
 
+#### Feature: File Upload & Attachment (`file_upload_enabled`)
+
+Enable in config:
+```json
+{ "file_upload_enabled": true }
+```
+
+Key binding: In compose mode (`i`), press **Ctrl+f** to open the offline file browser overlay. Select a file and press **Enter** to attach it.
+
+| Permission        | Type      | Admin Consent | Purpose                                                                                  |
+| ----------------- | --------- | ------------- | ---------------------------------------------------------------------------------------- |
+| `Files.ReadWrite` | Delegated | Not required  | Upload file attachments from the local computer to OneDrive/SharePoint via the Graph API |
+
+> **Note**: Files are uploaded to your OneDrive `Microsoft Teams Chat Files` folder (for chats) or the channel's SharePoint document library folder (for channels).
+
+---
+
 #### Feature: User Presence Status (`presence_enabled`)
 
 Enable in config:
