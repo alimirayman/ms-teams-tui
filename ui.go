@@ -2046,8 +2046,9 @@ func (m Model) handleMessagePopupKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 			// Download/open selected attachment as xdg-open.
 			if m.app.MessageSelectedIndex < len(m.app.Messages) {
 				msgObj := m.app.Messages[m.app.MessageSelectedIndex]
-				if m.app.AttachmentSelectedIndex < len(msgObj.Attachments) {
-					att := msgObj.Attachments[m.app.AttachmentSelectedIndex]
+				vAtts := viewableAttachments(msgObj)
+				if m.app.AttachmentSelectedIndex < len(vAtts) {
+					att := vAtts[m.app.AttachmentSelectedIndex]
 					if !m.app.Features.FilePreview {
 						m.app.SetStatus("File preview disabled — enable 'file_preview_enabled' in config.json", 5*time.Second)
 					} else if att.ContentURL != nil && *att.ContentURL != "" {
@@ -2073,7 +2074,7 @@ func (m Model) handleMessagePopupKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		var cmd tea.Cmd
 		if m.app.MessageSelectedIndex < len(m.app.Messages) {
 			msgObj := m.app.Messages[m.app.MessageSelectedIndex]
-			if len(msgObj.Attachments) > 0 {
+			if len(viewableAttachments(msgObj)) > 0 {
 				m.app.AttachmentCursorMode = !m.app.AttachmentCursorMode
 				m.app.AttachmentSelectedIndex = 0
 				if m.app.AttachmentCursorMode {
@@ -2088,7 +2089,7 @@ func (m Model) handleMessagePopupKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	case "j", "down":
 		if m.app.AttachmentCursorMode {
 			if m.app.MessageSelectedIndex < len(m.app.Messages) {
-				attCount := len(m.app.Messages[m.app.MessageSelectedIndex].Attachments)
+				attCount := len(viewableAttachments(m.app.Messages[m.app.MessageSelectedIndex]))
 				if m.app.AttachmentSelectedIndex < attCount-1 {
 					m.app.AttachmentSelectedIndex++
 					return m, m.checkAndTriggerPreviewDownload()
@@ -2546,8 +2547,9 @@ func (m Model) View() string {
 	if m.app.MessagePopupMode && m.app.Features.FilePreviewInTerminal && m.app.AttachmentCursorMode {
 		if m.app.MessageSelectedIndex >= 0 && m.app.MessageSelectedIndex < len(m.app.Messages) {
 			msgObj := m.app.Messages[m.app.MessageSelectedIndex]
-			if m.app.AttachmentSelectedIndex >= 0 && m.app.AttachmentSelectedIndex < len(msgObj.Attachments) {
-				att := msgObj.Attachments[m.app.AttachmentSelectedIndex]
+			vAtts := viewableAttachments(msgObj)
+			if m.app.AttachmentSelectedIndex >= 0 && m.app.AttachmentSelectedIndex < len(vAtts) {
+				att := vAtts[m.app.AttachmentSelectedIndex]
 				if isImageAttachment(att) {
 					if cp, err := getAttachmentCachePath(att); err == nil {
 						if _, err := os.Stat(cp); err == nil {
@@ -5198,6 +5200,20 @@ func (m Model) renderUserSearchPopup(w, h int) string {
 	return box
 }
 
+// viewableAttachments returns the subset of a message's attachments that should
+// be shown in the view popup — i.e. real files, excluding quoted-reply references
+// (contentType "messageReference") which are already rendered inline as blockquotes.
+func viewableAttachments(msg Message) []MessageAttachment {
+	var out []MessageAttachment
+	for _, att := range msg.Attachments {
+		if att.ContentType != nil && strings.EqualFold(*att.ContentType, "messageReference") {
+			continue
+		}
+		out = append(out, att)
+	}
+	return out
+}
+
 func (m Model) renderMessagePopup(w, h int) string {
 	if len(m.app.Messages) == 0 || m.app.MessageSelectedIndex < 0 || m.app.MessageSelectedIndex >= len(m.app.Messages) {
 		return ""
@@ -5236,8 +5252,9 @@ func (m Model) renderMessagePopup(w, h int) string {
 	if m.app.Features.FilePreviewInTerminal && m.app.AttachmentCursorMode {
 		if m.app.MessageSelectedIndex >= 0 && m.app.MessageSelectedIndex < len(m.app.Messages) {
 			msgObj := m.app.Messages[m.app.MessageSelectedIndex]
-			if m.app.AttachmentSelectedIndex >= 0 && m.app.AttachmentSelectedIndex < len(msgObj.Attachments) {
-				att := msgObj.Attachments[m.app.AttachmentSelectedIndex]
+			vAtts := viewableAttachments(msgObj)
+			if m.app.AttachmentSelectedIndex >= 0 && m.app.AttachmentSelectedIndex < len(vAtts) {
+				att := vAtts[m.app.AttachmentSelectedIndex]
 				if isImageAttachment(att) {
 					showImagePreview = true
 					if cp, err := getAttachmentCachePath(att); err == nil {
@@ -5276,8 +5293,9 @@ func (m Model) renderMessagePopup(w, h int) string {
 	}
 	headerLines = append(headerLines, "")
 
+	vAtts := viewableAttachments(msg)
 	attachmentsLines := []string{}
-	if len(msg.Attachments) > 0 {
+	if len(vAtts) > 0 {
 		attHeaderStyle := lipgloss.NewStyle().Foreground(colYellow).Bold(true)
 		attHeader := "Attachments:"
 		if m.app.AttachmentCursorMode {
@@ -5286,7 +5304,7 @@ func (m Model) renderMessagePopup(w, h int) string {
 			attHeader += " [Tab to select & download]"
 		}
 		attachmentsLines = append(attachmentsLines, attHeaderStyle.Render(attHeader))
-		for i, att := range msg.Attachments {
+		for i, att := range vAtts {
 			name := "Unnamed attachment"
 			if att.Name != nil && *att.Name != "" {
 				name = *att.Name
@@ -6047,10 +6065,11 @@ func (m Model) checkAndTriggerPreviewDownload() tea.Cmd {
 		return nil
 	}
 	msgObj := m.app.Messages[m.app.MessageSelectedIndex]
-	if m.app.AttachmentSelectedIndex < 0 || m.app.AttachmentSelectedIndex >= len(msgObj.Attachments) {
+	vAtts := viewableAttachments(msgObj)
+	if m.app.AttachmentSelectedIndex < 0 || m.app.AttachmentSelectedIndex >= len(vAtts) {
 		return nil
 	}
-	att := msgObj.Attachments[m.app.AttachmentSelectedIndex]
+	att := vAtts[m.app.AttachmentSelectedIndex]
 	if !isImageAttachment(att) {
 		// Not an image, clear any displayed preview
 		return clearKittyImagesCmd()
