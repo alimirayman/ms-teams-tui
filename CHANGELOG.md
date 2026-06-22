@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.1.6] - 2026-06-22
+
+### Bug Fixes
+
+- *(ui)* **Enable channel background polling during sleep and blur modes** - ([b0d1ae7](https://github.com/nospor/teams-tui-go/commit/b0d1ae730da9a5f19947814c9e7def96e76f450c))
+
+
+- *(ui)* **Resolve message list jumping and initial load delay** - ([5145eb1](https://github.com/nospor/teams-tui-go/commit/5145eb1af3c4a589d778efc27545ef4e3d5438ac))
+
+
+
+### Miscellaneous Tasks
+
+- **Update CHANGELOG.md for v1.1.5 [skip ci]** - ([7b8fd59](https://github.com/nospor/teams-tui-go/commit/7b8fd590ac384a869de36662dbac7b92ac4b4d0a))
+
+
+
 ## [1.1.5] - 2026-06-18
 
 ### Features
