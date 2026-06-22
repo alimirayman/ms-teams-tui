@@ -127,6 +127,7 @@ type App struct {
 	HistoryMessages            map[string][]Message
 	HistoryNextLink            map[string]string
 	HistoryInitialized         map[string]bool
+	ChatMessagesLoadedOnce     map[string]bool
 	SearchStates               map[string]*ChatSearchState
 	CachedMessages             map[string][]Message // per-chat message cache for instant restore on revisit
 	CachedNextLink             map[string]string    // per-chat NextLink cache
@@ -233,6 +234,7 @@ func NewApp() *App {
 		HistoryMessages:           make(map[string][]Message),
 		HistoryNextLink:           make(map[string]string),
 		HistoryInitialized:        make(map[string]bool),
+		ChatMessagesLoadedOnce:    make(map[string]bool),
 		SearchStates:              make(map[string]*ChatSearchState),
 		CachedMessages:            make(map[string][]Message),
 		CachedNextLink:            make(map[string]string),

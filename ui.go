@@ -781,36 +781,39 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Retrieve the chat ID from the index at the time the load was issued.
 		if msg.ChatIndex >= 0 && msg.ChatIndex < len(m.app.Chats) {
 			loadedChatID := m.app.Chats[msg.ChatIndex].ID
-			if loadedChatID != "" && len(msg.Messages) > 0 {
-				// Merge into the existing cache rather than overwriting it.
-				// A blind overwrite would discard older pages that were already
-				// loaded via pagination, and would also wipe pending edit patches.
-				existing := m.app.CachedMessages[loadedChatID]
-				if len(existing) == 0 {
-					m.app.CachedMessages[loadedChatID] = msg.Messages
-				} else {
-					// Update/add only the messages present in the new batch.
-					idxMap := make(map[string]int, len(existing))
-					for i, em := range existing {
-						idxMap[em.ID] = i
-					}
-					for _, nm := range msg.Messages {
-						if idx, ok := idxMap[nm.ID]; ok {
-							existing[idx] = nm
-						} else {
-							existing = append(existing, nm)
+			if loadedChatID != "" {
+				m.app.ChatMessagesLoadedOnce[loadedChatID] = true
+				if len(msg.Messages) > 0 {
+					// Merge into the existing cache rather than overwriting it.
+					// A blind overwrite would discard older pages that were already
+					// loaded via pagination, and would also wipe pending edit patches.
+					existing := m.app.CachedMessages[loadedChatID]
+					if len(existing) == 0 {
+						m.app.CachedMessages[loadedChatID] = msg.Messages
+					} else {
+						// Update/add only the messages present in the new batch.
+						idxMap := make(map[string]int, len(existing))
+						for i, em := range existing {
+							idxMap[em.ID] = i
 						}
+						for _, nm := range msg.Messages {
+							if idx, ok := idxMap[nm.ID]; ok {
+								existing[idx] = nm
+							} else {
+								existing = append(existing, nm)
+							}
+						}
+						sort.Slice(existing, func(i, j int) bool {
+							return existing[i].CreatedDateTime > existing[j].CreatedDateTime
+						})
+						m.app.CachedMessages[loadedChatID] = existing
 					}
-					sort.Slice(existing, func(i, j int) bool {
-						return existing[i].CreatedDateTime > existing[j].CreatedDateTime
-					})
-					m.app.CachedMessages[loadedChatID] = existing
-				}
-				m.app.CachedNextLink[loadedChatID] = msg.NextLink
-				if m.app.Features.SqliteEnabled {
-					go SaveMessages(loadedChatID, msg.Messages)
-					if msg.NextLink != "" {
-						go SaveNextLink(loadedChatID, msg.NextLink)
+					m.app.CachedNextLink[loadedChatID] = msg.NextLink
+					if m.app.Features.SqliteEnabled {
+						go SaveMessages(loadedChatID, msg.Messages)
+						if msg.NextLink != "" {
+							go SaveNextLink(loadedChatID, msg.NextLink)
+						}
 					}
 				}
 			}
@@ -6341,12 +6344,15 @@ func (m Model) rebuildMentionSuggestions() Model {
 
 func (m Model) loadChatMessages(chatID string, chatIndex int) (Model, tea.Cmd) {
 	m.lastMessageRefresh = time.Now()
-	// 1. Check in-memory cache first
-	if cached, ok := m.app.CachedMessages[chatID]; ok && len(cached) > 0 {
-		m.app.Messages = cached
-		m.app.NextLink = m.app.CachedNextLink[chatID]
-		m.app.SetLoadingMessages(false)
-		return m, nil
+	// 1. Check in-memory cache first if it has been fully loaded once in this session.
+	if m.app.ChatMessagesLoadedOnce[chatID] {
+		if cached, ok := m.app.CachedMessages[chatID]; ok && len(cached) > 0 {
+			m.app.Messages = cached
+			m.app.NextLink = m.app.CachedNextLink[chatID]
+			m.app.SetLoadingMessages(false)
+			m.app.SnapToBottom = true
+			return m, nil
+		}
 	}
 
 	// 2. If SQLite enabled, check DB
@@ -6360,15 +6366,25 @@ func (m Model) loadChatMessages(chatID string, chatIndex int) (Model, tea.Cmd) {
 			m.app.Messages = dbMsgs
 			m.app.NextLink = nextLink
 			m.app.SetLoadingMessages(false)
+			m.app.SnapToBottom = true
+			m.app.ChatMessagesLoadedOnce[chatID] = true
 			// Still fetch the latest messages in the background to update the DB and cache!
 			return m, loadMessagesCmd(m.clientID, chatID, chatIndex)
 		}
 	}
 
-	// 3. Fallback to API load
-	m.app.Messages = nil
-	m.app.NextLink = ""
-	m.app.SetLoadingMessages(true)
+	// 3. Fallback to API load (using cached message, e.g. LastMessagePreview, as a placeholder if available)
+	if cached, ok := m.app.CachedMessages[chatID]; ok && len(cached) > 0 {
+		m.app.Messages = cached
+		m.app.NextLink = m.app.CachedNextLink[chatID]
+		m.app.SetLoadingMessages(true)
+		m.app.SnapToBottom = true
+	} else {
+		m.app.Messages = nil
+		m.app.NextLink = ""
+		m.app.SetLoadingMessages(true)
+		m.app.SnapToBottom = true
+	}
 	return m, loadMessagesCmd(m.clientID, chatID, chatIndex)
 }
 
