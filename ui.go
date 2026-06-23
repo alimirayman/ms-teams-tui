@@ -213,6 +213,9 @@ type Model struct {
 	// Stable ordering of chat IDs.
 	stableChatOrder []string
 
+	// Index in stableChatOrder to start the next reaction poll from.
+	nextReactionPollIndex int
+
 	// Track last-seen message IDs and timestamps per chat.
 	lastMsgID   map[string]string
 	lastMsgTime map[string]time.Time
@@ -464,17 +467,30 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				selectedID = chat.ID
 			}
 
-			count := 0
-			for _, id := range m.stableChatOrder {
-				if id == selectedID {
-					continue
+			numChats := len(m.stableChatOrder)
+			if numChats > 0 {
+				// Poll up to 5 chats in round-robin fashion, excluding the selected one.
+				if m.nextReactionPollIndex >= numChats {
+					m.nextReactionPollIndex = 0
 				}
-				chatsToPoll = append(chatsToPoll, id)
-				count++
-				if count >= 5 {
-					break
+				startIdx := m.nextReactionPollIndex
+				polledCount := 0
+
+				for step := 0; step < numChats; step++ {
+					currIdx := (startIdx + step) % numChats
+					id := m.stableChatOrder[currIdx]
+					if id == selectedID {
+						continue
+					}
+					chatsToPoll = append(chatsToPoll, id)
+					polledCount++
+					m.nextReactionPollIndex = (currIdx + 1) % numChats
+					if polledCount >= 5 {
+						break
+					}
 				}
 			}
+
 			if len(chatsToPoll) > 0 {
 				cmds = append(cmds, pollReactionsCmd(m.clientID, chatsToPoll))
 			}
