@@ -526,6 +526,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if isNewMsgInExistingChat || isBrandNewChat {
 				m.lastMsgID[c.ID] = newID
 				m.lastMsgTime[c.ID] = newTime
+				m.app.ChatCacheDirty[c.ID] = true
 
 				// Save/cache the new message immediately so it's visible if we navigate to the chat.
 				m.app.HistoryMessages[c.ID] = mergeHistoryMessages(m.app.HistoryMessages[c.ID], []Message{*c.LastMessagePreview})
@@ -799,6 +800,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			loadedChatID := m.app.Chats[msg.ChatIndex].ID
 			if loadedChatID != "" {
 				m.app.ChatMessagesLoadedOnce[loadedChatID] = true
+				m.app.ChatCacheDirty[loadedChatID] = false
 				if len(msg.Messages) > 0 {
 					// Merge into the existing cache rather than overwriting it.
 					// A blind overwrite would discard older pages that were already
@@ -6365,8 +6367,12 @@ func (m Model) loadChatMessages(chatID string, chatIndex int) (Model, tea.Cmd) {
 		if cached, ok := m.app.CachedMessages[chatID]; ok && len(cached) > 0 {
 			m.app.Messages = cached
 			m.app.NextLink = m.app.CachedNextLink[chatID]
-			m.app.SetLoadingMessages(false)
 			m.app.SnapToBottom = true
+			if m.app.ChatCacheDirty[chatID] {
+				m.app.SetLoadingMessages(true)
+				return m, loadMessagesCmd(m.clientID, chatID, chatIndex)
+			}
+			m.app.SetLoadingMessages(false)
 			return m, nil
 		}
 	}
