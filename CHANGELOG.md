@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.2.0] - 2026-07-07
+
+### Features
+
+- **Allow viewing messages in external editor using Ctrl+g in message mode and popup** - ([83e1066](https://github.com/nospor/teams-tui-go/commit/83e1066f812a34548b77f24e5ff56d7fe20892bd))
+
+
+- **Add URL opening capability with custom YouTrack/GitLab command overrides and split yank/open workflows** - ([cca5cb5](https://github.com/nospor/teams-tui-go/commit/cca5cb50f97bc1d2dab57cc64c99a3da58a36eb5))
+
+
+
+### Miscellaneous Tasks
+
+- **Update CHANGELOG.md for v1.1.9 [skip ci]** - ([4ef572a](https://github.com/nospor/teams-tui-go/commit/4ef572a3a506c872e6c92050994b113d462311fb))
+
+
+
 ## [1.1.9] - 2026-07-06
 
 ### Features
