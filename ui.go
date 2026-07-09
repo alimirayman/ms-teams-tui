@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"hash/crc32"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -88,6 +89,15 @@ type MsgMoreMessagesLoaded struct {
 // MsgTick is the heartbeat used for periodic refresh and bell timeout.
 type MsgTick struct{}
 
+type MsgConversationSettled struct {
+	Generation   uint64
+	ChatID       string
+	ChatIndex    int
+	TeamID       string
+	ChannelID    string
+	ChannelIndex int
+}
+
 // MsgSendDone signals that a message send attempt has completed.
 type MsgSendDone struct{ Err error }
 
@@ -166,6 +176,16 @@ type InlineImagePlacement struct {
 	Row       int
 	Width     int
 	Height    int
+}
+
+type messageRenderCacheEntry struct {
+	Width       int
+	RawBody     string
+	Subject     string
+	SearchQuery string
+	Reactions   string
+	Attachments string
+	Lines       []string
 }
 
 // MsgTeamsChannelsLoaded is sent when the joined teams and their channels have been fetched.
@@ -302,6 +322,10 @@ type Model struct {
 	lastWrittenReactions int
 	previewDownloads     map[string]bool
 	previewFailures      map[string]bool
+	messageRenderCache   map[string]messageRenderCacheEntry
+	kittyPreparedCache   map[string]kittyPreparedImage
+	kittyTransmitted     map[string]bool
+	navigationGeneration uint64
 }
 
 // NewModel creates the initial Bubble Tea model.
@@ -374,6 +398,9 @@ func NewModel(app *App, clientID, userID string) Model {
 		lastWrittenReactions: -1,
 		previewDownloads:     make(map[string]bool),
 		previewFailures:      make(map[string]bool),
+		messageRenderCache:   make(map[string]messageRenderCacheEntry),
+		kittyPreparedCache:   make(map[string]kittyPreparedImage),
+		kittyTransmitted:     make(map[string]bool),
 	}
 }
 
@@ -418,6 +445,33 @@ func (m Model) updateInternal(msg tea.Msg) (Model, tea.Cmd) {
 			popupH = 15
 		}
 		m.filepicker.SetHeight(popupH - 7)
+
+	case MsgConversationSettled:
+		if msg.Generation != m.navigationGeneration {
+			break
+		}
+		if msg.ChannelIndex >= 0 {
+			if m.channelSelectedIndex == msg.ChannelIndex &&
+				m.app.SelectedChannelTeamID == msg.TeamID &&
+				m.app.SelectedChannelID == msg.ChannelID {
+				var cmd tea.Cmd
+				m, cmd = m.loadChannelMessages(msg.TeamID, msg.ChannelID)
+				if cmd != nil {
+					cmds = append(cmds, cmd)
+				}
+			}
+			break
+		}
+		if m.channelSelectedIndex < 0 && m.app.SelectedIndex == msg.ChatIndex {
+			if chat := m.app.GetSelectedChat(); chat != nil && chat.ID == msg.ChatID {
+				m = m.markRead()
+				var cmd tea.Cmd
+				m, cmd = m.loadChatMessages(chat.ID, msg.ChatIndex)
+				if cmd != nil {
+					cmds = append(cmds, cmd)
+				}
+			}
+		}
 
 	// ── Heartbeat tick ───────────────────────────────────────────────────
 	case MsgTick:
@@ -1211,6 +1265,7 @@ func (m Model) updateInternal(msg tea.Msg) (Model, tea.Cmd) {
 
 	// ── External editor finished ──────────────────────────────────────────
 	case MsgEditorFinished:
+		clear(m.kittyTransmitted)
 		if msg.Err != nil {
 			m.app.SetStatus("Editor error: "+msg.Err.Error(), 5*time.Second)
 		} else if !msg.ReadOnly {
@@ -1606,6 +1661,35 @@ func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	return m.handleNormalModeKey(msg)
 }
 
+func (m Model) messageIndexNearViewport() int {
+	if len(m.app.Messages) == 0 {
+		return -1
+	}
+	target := m.app.ScrollOffset + max(1, (m.height-2)/2)
+	bestIndex := 0
+	bestOffset := -1
+	for i, offset := range m.app.MessageLineOffsets {
+		if offset <= target && offset > bestOffset {
+			bestIndex = i
+			bestOffset = offset
+		}
+	}
+	return bestIndex
+}
+
+func (m Model) toggleMessageExpanded(index int) Model {
+	if index < 0 || index >= len(m.app.Messages) {
+		return m
+	}
+	if m.app.ExpandedMessages == nil {
+		m.app.ExpandedMessages = make(map[string]bool)
+	}
+	messageID := m.app.Messages[index].ID
+	m.app.ExpandedMessages[messageID] = !m.app.ExpandedMessages[messageID]
+	m.app.SnapToBottom = false
+	return m
+}
+
 func (m Model) handleNormalModeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	if m.app.DeleteConfirmMode {
 		return m.handleDeleteConfirmModeKey(msg)
@@ -1662,6 +1746,25 @@ func (m Model) handleNormalModeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 			}
 		}
 
+	case "g", "home":
+		if m.channelSelectedIndex >= 0 {
+			m.channelSelectedIndex = 0
+		} else if len(m.app.Chats) > 0 {
+			m.app.SelectedIndex = 0
+		}
+
+	case "G", "end":
+		if m.channelSelectedIndex >= 0 {
+			if chans := m.allChannels(); len(chans) > 0 {
+				m.channelSelectedIndex = len(chans) - 1
+			}
+		} else if len(m.app.Chats) > 0 {
+			m.app.SelectedIndex = len(m.app.Chats) - 1
+		}
+
+	case "enter":
+		return m.loadActiveConversationNow()
+
 	case "tab":
 		// Switch between chat section and channel section.
 		if !m.app.Features.TeamsChannels || len(m.allChannels()) == 0 {
@@ -1670,22 +1773,13 @@ func (m Model) handleNormalModeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		if m.channelSelectedIndex >= 0 {
 			// Currently in channels → switch to chats.
 			m.channelSelectedIndex = -1
-			m.app.SelectedChannelTeamID = ""
-			m.app.SelectedChannelID = ""
-			m.app.SnapToBottom = true
-			if chat := m.app.GetSelectedChat(); chat != nil {
-				m = m.markRead()
-				return m.loadChatMessages(chat.ID, m.app.SelectedIndex)
-			}
+			return m, m.scheduleConversationLoad()
 		} else {
 			// Currently in chats → switch to channels (go to first channel).
 			m.channelSelectedIndex = 0
 			chans := m.allChannels()
 			if len(chans) > 0 {
-				entry := chans[0]
-				m.app.SelectedChannelTeamID = entry.teamID
-				m.app.SelectedChannelID = entry.channelID
-				return m.loadChannelMessages(entry.teamID, entry.channelID)
+				return m, m.scheduleConversationLoad()
 			}
 		}
 
@@ -1714,6 +1808,9 @@ func (m Model) handleNormalModeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 			}
 		}
 		m.app.SetStatus("No image found in the loaded messages", 4*time.Second)
+
+	case "z":
+		m = m.toggleMessageExpanded(m.messageIndexNearViewport())
 
 	case "i":
 		if m.app.SelectedIndex < 0 && m.channelSelectedIndex < 0 {
@@ -1795,7 +1892,7 @@ func (m Model) handleNormalModeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 			m.app.SetStatus("💤 Entered sleep mode. No chat active.", 3*time.Second)
 		}
 
-	case "K", "pgup":
+	case "K", "pgup", "ctrl+u":
 		if m.app.SelectedIndex < 0 && m.channelSelectedIndex < 0 {
 			break
 		}
@@ -1803,17 +1900,25 @@ func (m Model) handleNormalModeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 			m.app.SetLoadingMessages(true)
 			return m, loadMoreMessagesCmd(m.clientID, m.app.NextLink, m.activeConversationID(), false)
 		}
-		m.app.ScrollOffset -= 10
+		step := 10
+		if msg.String() == "ctrl+u" && m.height > 6 {
+			step = (m.height - 2) / 2
+		}
+		m.app.ScrollOffset -= step
 		if m.app.ScrollOffset < 0 {
 			m.app.ScrollOffset = 0
 		}
 		m.app.SnapToBottom = false
 
-	case "J", "pgdown":
+	case "J", "pgdown", "ctrl+d":
 		if m.app.SelectedIndex < 0 && m.channelSelectedIndex < 0 {
 			break
 		}
-		m.app.ScrollOffset += 10
+		step := 10
+		if msg.String() == "ctrl+d" && m.height > 6 {
+			step = (m.height - 2) / 2
+		}
+		m.app.ScrollOffset += step
 		if m.app.ScrollOffset >= m.app.MaxScroll {
 			m.app.ScrollOffset = m.app.MaxScroll
 			m.app.SnapToBottom = true
@@ -1825,18 +1930,7 @@ func (m Model) handleNormalModeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		}
 		if len(m.app.Messages) > 0 {
 			m.app.MessageSelectionMode = true
-			if m.app.SnapToBottom {
-				m.app.MessageSelectedIndex = 0
-			} else {
-				// Try to start selection at the message currently at the top of the viewport.
-				m.app.MessageSelectedIndex = 0
-				for i := 0; i < len(m.app.Messages); i++ {
-					if i < len(m.app.MessageLineOffsets) && m.app.MessageLineOffsets[i] <= m.app.ScrollOffset {
-						m.app.MessageSelectedIndex = i
-						break
-					}
-				}
-			}
+			m.app.MessageSelectedIndex = m.messageIndexNearViewport()
 		}
 
 	case "f":
@@ -1946,15 +2040,13 @@ func (m Model) handleNormalModeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		}
 	}
 
-	// If channel is selected, load its messages on any navigation change.
+	// Wait briefly before loading while the cursor is moving through the list.
 	if m.channelSelectedIndex >= 0 {
 		chans := m.allChannels()
 		if m.channelSelectedIndex < len(chans) {
 			entry := chans[m.channelSelectedIndex]
 			if entry.teamID != m.app.SelectedChannelTeamID || entry.channelID != m.app.SelectedChannelID {
-				m.app.SelectedChannelTeamID = entry.teamID
-				m.app.SelectedChannelID = entry.channelID
-				return m.loadChannelMessages(entry.teamID, entry.channelID)
+				return m, m.scheduleConversationLoad()
 			}
 		}
 		return m, nil
@@ -1963,16 +2055,10 @@ func (m Model) handleNormalModeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	// If chat selection changed, reload messages.
 	if m.app.SelectedIndex != prevIdx {
 		// Left channel mode when switching to a chat.
-		m.app.SelectedChannelTeamID = ""
-		m.app.SelectedChannelID = ""
 		m.app.SearchMode = false
 		m.app.SearchActive = false
 		m.app.SearchQuery = ""
-		m.app.SnapToBottom = true
-		if chat := m.app.GetSelectedChat(); chat != nil {
-			m = m.markRead()
-			return m.loadChatMessages(chat.ID, m.app.SelectedIndex)
-		}
+		return m, m.scheduleConversationLoad()
 	}
 
 	return m, nil
@@ -2370,6 +2456,20 @@ func (m Model) handleMessageSelectionModeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 			m.app.SetLoadingMessages(true)
 			return m, loadMoreMessagesCmd(m.clientID, m.app.NextLink, m.activeConversationID(), false)
 		}
+
+	case "g", "home":
+		if len(m.app.Messages) > 0 {
+			m.app.MessageSelectedIndex = len(m.app.Messages) - 1
+		}
+
+	case "G", "end":
+		m.app.MessageSelectedIndex = 0
+
+	case "z", "enter":
+		if m.app.MessageSelectedIndex >= 0 && m.app.MessageSelectedIndex < len(m.app.Messages) {
+			m = m.toggleMessageExpanded(m.app.MessageSelectedIndex)
+		}
+		return m, nil
 
 	case "r":
 		m.app.ReactionMode = true
@@ -2790,6 +2890,34 @@ func (m Model) writeAppState() Model {
 // Main View
 // ---------------------------------------------------------------------------
 
+func (m Model) persistentKittySequence(path string, x, y, width, height int, placementID uint32) string {
+	key := fmt.Sprintf("%s:%d:%d", path, width, height)
+	prepared, ok := m.kittyPreparedCache[key]
+	if !ok {
+		var err error
+		prepared, err = prepareKittyImage(path, width, height)
+		if err != nil {
+			return ""
+		}
+		if len(m.kittyPreparedCache) > 64 {
+			clear(m.kittyPreparedCache)
+			clear(m.kittyTransmitted)
+		}
+		m.kittyPreparedCache[key] = prepared
+	}
+	imageID := crc32.ChecksumIEEE([]byte(key))
+	if imageID == 0 {
+		imageID = 1
+	}
+	var sequence strings.Builder
+	if !m.kittyTransmitted[key] {
+		sequence.WriteString(kittyTransmitSequence(prepared, imageID))
+		m.kittyTransmitted[key] = true
+	}
+	sequence.WriteString(kittyPlaceSequence(prepared, imageID, placementID, x, y))
+	return sequence.String()
+}
+
 // View renders the complete TUI.
 func (m Model) View() string {
 	if m.width == 0 {
@@ -2797,7 +2925,7 @@ func (m Model) View() string {
 	}
 
 	chatW := chatPanelWidth(m.width)
-	msgW := m.width - chatW - 2
+	msgW := msgPanelWidth(m.width)
 	contentH := m.height - 1
 	if contentH < 1 {
 		contentH = 1
@@ -2954,7 +3082,7 @@ func (m Model) View() string {
 								imgH := (innerH - 1) - 2 // targetH - 2
 
 								// Clear all, then draw image
-								kittySeq += kittyImageSequence(cp, imgX, imgY, imgW, imgH)
+								kittySeq += m.persistentKittySequence(cp, imgX, imgY, imgW, imgH, 900)
 							}
 						}
 					}
@@ -2963,16 +3091,17 @@ func (m Model) View() string {
 		}
 	} else if showMainView && m.app.Features.FilePreviewInTerminal {
 		var media strings.Builder
-		for _, placement := range m.app.InlineImagePlacements {
+		for index, placement := range m.app.InlineImagePlacements {
 			if _, err := os.Stat(placement.CachePath); err != nil {
 				continue
 			}
-			media.WriteString(kittyImageSequence(
+			media.WriteString(m.persistentKittySequence(
 				placement.CachePath,
 				chatW+1+placement.Col,
 				1+placement.Row,
 				placement.Width,
 				placement.Height,
+				uint32(index+1),
 			))
 		}
 		kittySeq += media.String()
@@ -2980,6 +3109,45 @@ func (m Model) View() string {
 
 	result = fitFrame(result, m.width, m.height)
 	return result + kittySeq
+}
+
+func headerLine(left, right string, width int) string {
+	left = fitLine(left, width)
+	right = fitLine(right, width)
+	gap := width - cellWidth(left) - cellWidth(right)
+	if gap < 1 {
+		return fitLine(left, width)
+	}
+	return left + strings.Repeat(" ", gap) + right
+}
+
+func (m Model) conversationHeader(w int, detail string) string {
+	kind := "CHAT"
+	name := "No conversation"
+	if entry := m.activeChannelEntry(); entry != nil {
+		kind = "CHANNEL"
+		name = entry.teamName + " / " + entry.channelName
+	} else if chat := m.app.GetSelectedChat(); chat != nil && chat.CachedDisplayName != nil {
+		name = *chat.CachedDisplayName
+	}
+	left := lipgloss.NewStyle().Foreground(colCyan).Bold(true).Render(" "+kind) + "  " + fitLine(name, w/2)
+	if detail == "" {
+		if m.app.LoadingMessages {
+			detail = "syncing"
+		} else {
+			detail = fmt.Sprintf("%d messages", len(m.app.Messages))
+			if m.app.MaxScroll > 0 {
+				if m.app.SnapToBottom || m.app.ScrollOffset >= m.app.MaxScroll {
+					detail += " · latest"
+				} else {
+					progress := m.app.ScrollOffset * 100 / m.app.MaxScroll
+					detail += fmt.Sprintf(" · %d%%", progress)
+				}
+			}
+		}
+	}
+	right := lipgloss.NewStyle().Foreground(colDimGray).Render(detail + " ")
+	return headerLine(left, right, w)
 }
 
 // renderRightPanel renders the messages panel (with optional input area).
@@ -2994,17 +3162,13 @@ func (m Model) renderRightPanel(w, h int) string {
 	}
 
 	if !m.app.InputMode {
-		title := "Messages (i:compose, m:select, K/J:scroll, /:search, ?:help, ESC:sleep mode)"
-		if m.channelSelectedIndex >= 0 {
-			chans := m.allChannels()
-			if m.channelSelectedIndex < len(chans) {
-				entry := chans[m.channelSelectedIndex]
-				title = lipgloss.NewStyle().Foreground(lipgloss.Color("#5F87FF")).Bold(true).Render("#") +
-					" " + entry.teamName + " » " + entry.channelName +
-					lipgloss.NewStyle().Foreground(colDimGray).Render("  (K/J:scroll, m:select, ?:help)")
+		title := m.conversationHeader(w, "")
+		if m.app.MessageSelectionMode {
+			position := 0
+			if len(m.app.Messages) > 0 {
+				position = len(m.app.Messages) - m.app.MessageSelectedIndex
 			}
-		} else if m.app.MessageSelectionMode {
-			title = "MESSAGE MODE (j/k:nav, r:react, y:yank, u:url, o:open, d:delete, e:edit, a:answer, v:view, ctrl+g: editor, p:presence, i:profile, ESC/m:exit)"
+			title = m.conversationHeader(w, fmt.Sprintf("message %d/%d", position, len(m.app.Messages)))
 		}
 		msgContent := m.renderMessages(w, h-1)
 		return fitBlock(
@@ -3077,11 +3241,11 @@ func (m Model) renderRightPanel(w, h int) string {
 	}
 
 	msgContent := m.renderMessages(w, msgH-1)
-	title := "Messages (ESC to cancel)"
+	titleDetail := "composing"
 	if m.app.EditingMessageID != nil {
-		title = "EDITING MESSAGE (ESC to cancel)"
+		titleDetail = "editing"
 	} else if m.app.ChannelReplyToID != "" {
-		title = "REPLYING TO THREAD (ESC to cancel)"
+		titleDetail = "replying to thread"
 	} else if m.app.ReplyToMessage != nil {
 		ref := m.app.ReplyToMessage
 		sender := "someone"
@@ -3091,8 +3255,9 @@ func (m Model) renderRightPanel(w, h int) string {
 				sender = "yourself"
 			}
 		}
-		title = "REPLYING TO " + sender + " (ESC to cancel)"
+		titleDetail = "replying to " + sender
 	}
+	title := m.conversationHeader(w, titleDetail)
 	msgBox := fitBlock(
 		fitLine(lipgloss.NewStyle().Foreground(colDimGray).Render(title), w)+"\n"+msgContent,
 		w,
@@ -3301,11 +3466,8 @@ func (m Model) activeConversationID() string {
 }
 
 func (m Model) renderChatList(w, h int) string {
-	titleText := "Chats (j/k: nav, c: find, f: ★ fav, q: quit)"
-	if m.app.Features.TeamsChannels {
-		titleText = "Chats (j/k: nav, Tab: switch, c: find, f: ★ fav, q: quit)"
-	}
-	title := lipgloss.NewStyle().Foreground(colDimGray).Render(titleText)
+	titleText := fmt.Sprintf(" INBOX  %d", len(m.app.Chats))
+	title := lipgloss.NewStyle().Foreground(colWhite).Bold(true).Render(titleText)
 
 	if len(m.app.Chats) == 0 {
 		return lipgloss.JoinVertical(lipgloss.Left, title, m.app.Status)
@@ -3409,6 +3571,7 @@ func (m Model) renderChatList(w, h int) string {
 
 		var label string
 		if i == m.app.SelectedIndex && m.channelSelectedIndex < 0 {
+			labelStr = "› " + labelStr
 			label = lipgloss.NewStyle().
 				Foreground(colYellow).
 				Bold(unread || reactionEmoji != "").
@@ -3442,9 +3605,9 @@ func (m Model) renderChatList(w, h int) string {
 			divider := lipgloss.NewStyle().Foreground(colDimGray).Render("Teams (loading…)")
 			lines = append(lines, divider)
 		} else if len(chans) > 0 {
-			dividerText := "Teams"
+			dividerText := fmt.Sprintf(" CHANNELS  %d", len(chans))
 			if m.channelSelectedIndex >= 0 {
-				dividerText = "Teams (h: toggle hide)"
+				dividerText += "  [focused]"
 			}
 			divider := lipgloss.NewStyle().Foreground(colDimGray).Render(dividerText)
 			lines = append(lines, divider)
@@ -3509,7 +3672,7 @@ func (m Model) renderChatList(w, h int) string {
 						Foreground(colYellow).
 						Background(colDarkGray).
 						Bold(unread).
-						Render(padRight(fitLine(prefix+"# "+entry.teamName+" » "+entry.channelName, w), w))
+						Render(padRight(fitLine("› "+prefix+"# "+entry.teamName+" » "+entry.channelName, w), w))
 				} else {
 					var textStyle lipgloss.Style
 					if isHidden {
@@ -3543,6 +3706,96 @@ func (m Model) renderChatList(w, h int) string {
 // Messages rendering
 // ---------------------------------------------------------------------------
 
+const collapsedMessageLineLimit = 8
+
+func (m Model) messageBodySource(msg *Message, reactions, attachments string) string {
+	body := msg.GetPlainText()
+	if m.app.SearchActive && m.app.SearchQuery != "" {
+		body = highlightQuery(body, m.app.SearchQuery)
+	}
+
+	if msg.Subject != "" {
+		subject := msg.Subject
+		if m.app.SearchActive && m.app.SearchQuery != "" {
+			subject = highlightQuery(subject, m.app.SearchQuery)
+		}
+		subject = lipgloss.NewStyle().Bold(true).Foreground(colWhite).Render(subject)
+		if body != "" {
+			body = subject + "\n" + body
+		} else {
+			body = subject
+		}
+	}
+
+	if reactions != "" {
+		if body != "" {
+			body += "\n" + reactions
+		} else {
+			body = reactions
+		}
+	}
+	if attachments != "" {
+		if body != "" {
+			body += "\n" + attachments
+		} else {
+			body = attachments
+		}
+	}
+	return body
+}
+
+func (m Model) cachedMessageLines(msg *Message, width int) []string {
+	if m.messageRenderCache == nil {
+		m.messageRenderCache = make(map[string]messageRenderCacheEntry)
+	}
+	rawBody := ""
+	if msg.Body != nil && msg.Body.Content != nil {
+		rawBody = *msg.Body.Content
+	}
+	query := ""
+	if m.app.SearchActive {
+		query = m.app.SearchQuery
+	}
+	reactions := renderReactions(msg.Reactions)
+	attachments := renderAttachmentSummary(*msg)
+	if cached, ok := m.messageRenderCache[msg.ID]; ok &&
+		cached.Width == width &&
+		cached.RawBody == rawBody &&
+		cached.Subject == msg.Subject &&
+		cached.SearchQuery == query &&
+		cached.Reactions == reactions &&
+		cached.Attachments == attachments {
+		return cached.Lines
+	}
+	source := m.messageBodySource(msg, reactions, attachments)
+	lines := wordWrap(source, width)
+	if len(m.messageRenderCache) > 512 {
+		clear(m.messageRenderCache)
+	}
+	m.messageRenderCache[msg.ID] = messageRenderCacheEntry{
+		Width:       width,
+		RawBody:     rawBody,
+		Subject:     msg.Subject,
+		SearchQuery: query,
+		Reactions:   reactions,
+		Attachments: attachments,
+		Lines:       lines,
+	}
+	return lines
+}
+
+func collapsedMessageLines(lines []string, expanded bool) []string {
+	if expanded || len(lines) <= collapsedMessageLineLimit {
+		return lines
+	}
+	visible := append([]string(nil), lines[:collapsedMessageLineLimit-1]...)
+	remaining := len(lines) - len(visible)
+	indicator := lipgloss.NewStyle().Foreground(colDimGray).Render(
+		fmt.Sprintf("… %d more lines  [z expand · m actions]", remaining),
+	)
+	return append(visible, indicator)
+}
+
 func (m Model) renderMessages(w, h int) string {
 	m.app.InlineImagePlacements = nil
 	if m.app.LoadingMessages && len(m.app.Messages) == 0 {
@@ -3560,9 +3813,6 @@ func (m Model) renderMessages(w, h int) string {
 	msgs = msgs[start:]
 
 	var lines []string
-	var prevSender string
-	var prevTime time.Time
-
 	var selectedStartLine, selectedEndLine int = -1, -1
 	var pendingScrollLine int = -1
 	var imagePlacements []InlineImagePlacement
@@ -3592,15 +3842,7 @@ func (m Model) renderMessages(w, h int) string {
 
 		msgTime, _ := time.Parse(time.RFC3339Nano, msg.CreatedDateTime)
 		msgTime = msgTime.Local()
-		senderChanged := sender != prevSender
-		timeGap := !msgTime.IsZero() && !prevTime.IsZero() && (msgTime.Year() != prevTime.Year() ||
-			msgTime.Month() != prevTime.Month() ||
-			msgTime.Day() != prevTime.Day() ||
-			msgTime.Hour() != prevTime.Hour())
-
-		// Channel root messages always get their own header.
-		// Channel replies and regular chat messages group by sender/hour.
-		showHeader := senderChanged || timeGap || (m.channelSelectedIndex >= 0 && !msg.IsReply)
+		showHeader := true
 
 		if showHeader {
 			if len(lines) > 0 {
@@ -3653,53 +3895,6 @@ func (m Model) renderMessages(w, h int) string {
 			}
 			lines = append(lines, header)
 		}
-		prevSender = sender
-		prevTime = msgTime
-		// After a root channel message, reset grouping so replies start fresh
-		// and don't accidentally group with the previous thread's replies.
-		if m.channelSelectedIndex >= 0 && !msg.IsReply {
-			prevSender = ""
-			prevTime = time.Time{}
-		}
-
-		// Render body.
-		body := msg.GetPlainText()
-		if m.app.SearchActive && m.app.SearchQuery != "" {
-			body = highlightQuery(body, m.app.SearchQuery)
-		}
-
-		if msg.Subject != "" {
-			subjText := msg.Subject
-			if m.app.SearchActive && m.app.SearchQuery != "" {
-				subjText = highlightQuery(subjText, m.app.SearchQuery)
-			}
-			subjStyled := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FFFFFF")).Render(subjText)
-			if body != "" {
-				body = subjStyled + "\n" + body
-			} else {
-				body = subjStyled
-			}
-		}
-
-		// Add reactions.
-		reactionsStr := renderReactions(msg.Reactions)
-		if reactionsStr != "" {
-			if body != "" {
-				body += "\n" + reactionsStr
-			} else {
-				body = reactionsStr
-			}
-		}
-
-		attachmentSummary := renderAttachmentSummary(msg)
-		if attachmentSummary != "" {
-			if body != "" {
-				body += "\n" + attachmentSummary
-			} else {
-				body = attachmentSummary
-			}
-		}
-
 		// Replies from others (or replies in chats when not ours) are left-indented.
 		// In channels, replies are always right-aligned, so they do not have left indentation.
 		replyIndent := ""
@@ -3707,7 +3902,8 @@ func (m Model) renderMessages(w, h int) string {
 			replyIndent = "    " // 4 spaces aligning under "↳ "
 		}
 
-		msgLines := wordWrap(body, maxW-len(replyIndent))
+		msgLines := m.cachedMessageLines(&msgs[i], maxW-len(replyIndent))
+		msgLines = collapsedMessageLines(msgLines, m.app.ExpandedMessages[msg.ID])
 		padding := 0
 		if alignRight {
 			maxMsgW := 0
@@ -3740,57 +3936,76 @@ func (m Model) renderMessages(w, h int) string {
 		}
 
 		if m.app.Features.FilePreviewInTerminal && w >= 40 {
-			imageCount := 0
+			var imageAttachments []MessageAttachment
 			for _, att := range viewableAttachments(msg) {
-				if !isImageAttachment(att) {
-					continue
+				if isImageAttachment(att) {
+					imageAttachments = append(imageAttachments, att)
 				}
-				imageCount++
-				if imageCount > 3 {
+				if len(imageAttachments) == 2 {
 					break
 				}
+			}
 
+			thumbH := 7
+			sideBySide := len(imageAttachments) == 2 && maxW >= 60
+			thumbW := min(42, maxW)
+			if sideBySide {
+				thumbW = min(34, (maxW-2)/2)
+			}
+			groupW := thumbW
+			if sideBySide {
+				groupW = thumbW*2 + 2
+			}
+			baseCol := len(replyIndent)
+			if alignRight {
+				baseCol = w - groupW
+			}
+			if baseCol < 0 {
+				baseCol = 0
+			}
+
+			var prepared []InlineImagePlacement
+			missing := 0
+			for index, att := range imageAttachments {
 				resolvedAtt := m.resolvedAttachment(msg, att)
 				cachePath, err := getAttachmentCachePath(resolvedAtt)
 				if err != nil {
 					continue
 				}
-				thumbW := maxW
-				if thumbW > 48 {
-					thumbW = 48
-				}
-				thumbH := 10
-				col := len(replyIndent)
-				if alignRight {
-					col = w - thumbW
-				}
-				if col < 0 {
-					col = 0
-				}
-
-				row := len(lines)
-				loading := ""
 				if _, err := os.Stat(cachePath); err != nil {
-					name := "image"
-					if att.Name != nil && strings.TrimSpace(*att.Name) != "" {
-						name = strings.TrimSpace(*att.Name)
-					}
-					loading = lipgloss.NewStyle().Foreground(colDimGray).Render("Loading " + name + "…")
+					missing++
 				}
-				for imageRow := 0; imageRow < thumbH; imageRow++ {
-					line := ""
-					if imageRow == 0 {
-						line = loading
-					}
-					lines = append(lines, strings.Repeat(" ", col)+fitLine(line, thumbW))
+				col := baseCol
+				if sideBySide {
+					col += index * (thumbW + 2)
 				}
-				imagePlacements = append(imagePlacements, InlineImagePlacement{
+				prepared = append(prepared, InlineImagePlacement{
 					CachePath: cachePath,
 					Col:       col,
-					Row:       row,
 					Width:     thumbW,
 					Height:    thumbH,
 				})
+			}
+			if missing > 0 {
+				label := "loading image preview"
+				if missing > 1 {
+					label = fmt.Sprintf("loading %d image previews", missing)
+				}
+				lines = append(lines, strings.Repeat(" ", baseCol)+lipgloss.NewStyle().Foreground(colDimGray).Render(label))
+			}
+			for index := range prepared {
+				prepared[index].Row = len(lines)
+				imagePlacements = append(imagePlacements, prepared[index])
+				if !sideBySide {
+					for range thumbH {
+						lines = append(lines, "")
+					}
+				}
+			}
+			if sideBySide && len(prepared) > 0 {
+				for range thumbH {
+					lines = append(lines, "")
+				}
 			}
 		}
 		if isSelected {
@@ -3890,16 +4105,19 @@ func (m Model) renderStatusBar(w int) string {
 		return lipgloss.NewStyle().Foreground(colYellow).Background(lipgloss.Color("#202020")).
 			Render(padRight(" REACT: 1:👍 2:❤️ 3:😂 4:😮 5:😢 6:😡 (ESC:cancel)", w-1))
 	}
-	parts := []string{m.app.Status}
+	parts := make([]string, 0, 2)
+	if m.app.Status != "" {
+		parts = append(parts, m.app.Status)
+	}
 	if hint := m.statusHint(); hint != "" {
 		parts = append(parts, hint)
 	}
-	parts = append(parts, fmt.Sprintf("Notification (n): %s", m.app.NotificationMode))
-	text := strings.Join(parts, " | ")
+	left := strings.Join(parts, "  ·  ")
+	right := fmt.Sprintf("n:%s ", m.app.NotificationMode)
 	if m.app.LoadingMessages && len(m.app.Messages) > 0 {
-		text = "⏳ Loading older messages... | " + text
+		left = "syncing  ·  " + left
 	}
-	text = fitLine(" "+text, w-1)
+	text := headerLine(" "+left, right, w-1)
 	if m.app.VisualBellActive() {
 		style = style.Background(lipgloss.Color("#5F0000")).Foreground(colWhite).Bold(true)
 	}
@@ -3930,13 +4148,13 @@ func (m Model) statusHint() string {
 		}
 		return "Copy URL: j/k move, Enter copy, Esc cancel"
 	case m.app.MessageSelectionMode:
-		return "Select: j/k move, v view, y copy, r react, a reply, e edit, h/? help, m/Esc exit"
+		return "MESSAGES  j/k move  z/Enter expand  v full  a reply  r react  y copy  m/Esc back"
 	case m.app.SelectedIndex < 0 && m.channelSelectedIndex < 0:
 		return "Sleep: j/k select, h/? help, q quit"
 	case m.channelSelectedIndex >= 0:
-		return "Channel: j/k move, Tab chats, i compose, m select, v image, h hide, ? help"
+		return "LIST  j/k move  Enter open  g/G ends  Tab chats  m actions  z expand  i compose  h mute"
 	default:
-		return "Chat: j/k move, Tab channels, i compose, m select, v image, / search, h/? help"
+		return "LIST  j/k move  Enter open  g/G ends  Tab channels  m actions  z expand  i compose  / search"
 	}
 }
 
@@ -3945,11 +4163,31 @@ func (m Model) statusHint() string {
 // ---------------------------------------------------------------------------
 
 func chatPanelWidth(total int) int {
-	return total * 30 / 100
+	width := total * 27 / 100
+	if width < 26 {
+		width = 26
+	}
+	if width > 44 {
+		width = 44
+	}
+	if total-width-2 < 48 {
+		width = total - 50
+	}
+	if width < 18 {
+		width = 18
+	}
+	maxWidth := total - 3
+	if maxWidth < 0 {
+		maxWidth = 0
+	}
+	if width > maxWidth {
+		width = maxWidth
+	}
+	return width
 }
 
 func msgPanelWidth(total int) int {
-	return total - chatPanelWidth(total)
+	return max(0, total-chatPanelWidth(total)-2)
 }
 
 func truncate(s string, maxLen int) string {
@@ -6314,8 +6552,12 @@ func (m Model) getHelpContentLines() []string {
 		{"Navigation", [][2]string{
 			{"j / ↓", "Navigate list down (within section)"},
 			{"k / ↑", "Navigate list up (within section)"},
+			{"g / G", "Jump to first / last conversation"},
+			{"Enter", "Open highlighted conversation immediately"},
 			{"Tab", "Switch between Chats & Channels"},
 			{"m", "Enter message selection mode"},
+			{"z", "Expand/collapse the message near the viewport"},
+			{"Ctrl+u / Ctrl+d", "Scroll messages by half a page"},
 			{"v", "Preview the newest image in loaded messages"},
 			{"i", "Compose new message"},
 			{"c", "Open chat search / open chat"},
@@ -6329,6 +6571,8 @@ func (m Model) getHelpContentLines() []string {
 		}},
 		{"Message Selection (m)", [][2]string{
 			{"j / k", "Navigate messages"},
+			{"g / G", "Jump to oldest / newest message"},
+			{"z / Enter", "Expand or collapse selected message"},
 			{"v", "View message popup"},
 			{"y", "Yank message to clipboard"},
 			{"u", "Extract URLs"},
@@ -6902,8 +7146,12 @@ func (m *Model) queueInlineImagePreviews(limit int) tea.Cmd {
 		m.previewFailures = make(map[string]bool)
 	}
 
+	available := limit - len(m.previewDownloads)
+	if available <= 0 {
+		return nil
+	}
+
 	var cmds []tea.Cmd
-	queued := 0
 	for i := range m.app.Messages {
 		m.app.Messages[i].ProcessInlineImages()
 		msg := m.app.Messages[i]
@@ -6926,8 +7174,8 @@ func (m *Model) queueInlineImagePreviews(limit int) tea.Cmd {
 			}
 			m.previewDownloads[cachePath] = true
 			cmds = append(cmds, downloadPreviewCmd(m.clientID, fileURL, cachePath, true))
-			queued++
-			if queued >= limit {
+			available--
+			if available == 0 {
 				return tea.Batch(cmds...)
 			}
 		}
@@ -7043,6 +7291,79 @@ func (m Model) rebuildMentionSuggestions() Model {
 	}
 
 	return m
+}
+
+func (m *Model) showConversationCache(conversationID string) {
+	m.app.MessageSelectionMode = false
+	m.app.MessagePopupMode = false
+	m.app.ScrollOffset = 0
+	m.app.SnapToBottom = true
+	m.app.InlineImagePlacements = nil
+	if cached, ok := m.app.CachedMessages[conversationID]; ok && len(cached) > 0 {
+		m.app.Messages = cached
+		m.app.NextLink = m.app.CachedNextLink[conversationID]
+		m.app.SetLoadingMessages(false)
+		return
+	}
+	m.app.Messages = nil
+	m.app.NextLink = ""
+	m.app.SetLoadingMessages(true)
+}
+
+func (m *Model) scheduleConversationLoad() tea.Cmd {
+	m.navigationGeneration++
+	generation := m.navigationGeneration
+	if m.channelSelectedIndex >= 0 {
+		chans := m.allChannels()
+		if m.channelSelectedIndex < 0 || m.channelSelectedIndex >= len(chans) {
+			return nil
+		}
+		entry := chans[m.channelSelectedIndex]
+		channelIndex := m.channelSelectedIndex
+		m.app.SelectedChannelTeamID = entry.teamID
+		m.app.SelectedChannelID = entry.channelID
+		m.showConversationCache(entry.channelID)
+		return tea.Tick(140*time.Millisecond, func(time.Time) tea.Msg {
+			return MsgConversationSettled{
+				Generation:   generation,
+				TeamID:       entry.teamID,
+				ChannelID:    entry.channelID,
+				ChannelIndex: channelIndex,
+			}
+		})
+	}
+	if chat := m.app.GetSelectedChat(); chat != nil {
+		m.app.SelectedChannelTeamID = ""
+		m.app.SelectedChannelID = ""
+		m.showConversationCache(chat.ID)
+		chatIndex := m.app.SelectedIndex
+		return tea.Tick(140*time.Millisecond, func(time.Time) tea.Msg {
+			return MsgConversationSettled{
+				Generation:   generation,
+				ChatID:       chat.ID,
+				ChatIndex:    chatIndex,
+				ChannelIndex: -1,
+			}
+		})
+	}
+	return nil
+}
+
+func (m Model) loadActiveConversationNow() (Model, tea.Cmd) {
+	m.navigationGeneration++
+	if m.channelSelectedIndex >= 0 {
+		if entry := m.activeChannelEntry(); entry != nil {
+			m.app.SelectedChannelTeamID = entry.teamID
+			m.app.SelectedChannelID = entry.channelID
+			return m.loadChannelMessages(entry.teamID, entry.channelID)
+		}
+		return m, nil
+	}
+	if chat := m.app.GetSelectedChat(); chat != nil {
+		m = m.markRead()
+		return m.loadChatMessages(chat.ID, m.app.SelectedIndex)
+	}
+	return m, nil
 }
 
 func (m Model) loadChatMessages(chatID string, chatIndex int) (Model, tea.Cmd) {

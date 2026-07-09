@@ -2,8 +2,16 @@ package main
 
 import (
 	"bytes"
+	"fmt"
+	"image"
+	"image/color"
+	"image/png"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 func testStringPtr(s string) *string { return &s }
@@ -93,8 +101,154 @@ func TestRenderMessagesReservesInlineImageRows(t *testing.T) {
 	if len(app.InlineImagePlacements) != 1 {
 		t.Fatalf("inline image placements = %d, want 1", len(app.InlineImagePlacements))
 	}
-	if got := app.InlineImagePlacements[0].Height; got != 10 {
-		t.Fatalf("thumbnail height = %d, want 10", got)
+	if got := app.InlineImagePlacements[0].Height; got != 7 {
+		t.Fatalf("thumbnail height = %d, want 7", got)
+	}
+}
+
+func TestCollapsedMessageLinesBoundsLongPosts(t *testing.T) {
+	lines := make([]string, 40)
+	for i := range lines {
+		lines[i] = fmt.Sprintf("line %d", i+1)
+	}
+	collapsed := collapsedMessageLines(lines, false)
+	if len(collapsed) != collapsedMessageLineLimit {
+		t.Fatalf("collapsed line count = %d, want %d", len(collapsed), collapsedMessageLineLimit)
+	}
+	if !strings.Contains(stripANSI(collapsed[len(collapsed)-1]), "33 more lines") {
+		t.Fatalf("missing collapse indicator: %q", collapsed[len(collapsed)-1])
+	}
+	if expanded := collapsedMessageLines(lines, true); len(expanded) != len(lines) {
+		t.Fatalf("expanded line count = %d, want %d", len(expanded), len(lines))
+	}
+}
+
+func TestChatNavigationUsesCacheBeforeSettledLoad(t *testing.T) {
+	firstName := "First"
+	secondName := "Second"
+	secondBody := "cached second conversation"
+	app := NewApp()
+	app.SelectedIndex = 0
+	app.Chats = []Chat{
+		{ID: "first", CachedDisplayName: &firstName},
+		{ID: "second", CachedDisplayName: &secondName},
+	}
+	app.CachedMessages["second"] = []Message{{
+		ID:   "cached-message",
+		Body: &MessageBody{Content: &secondBody},
+	}}
+	model := NewModel(app, "client-id", "user-id")
+
+	next, cmd := model.handleNormalModeKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	if next.app.SelectedIndex != 1 {
+		t.Fatalf("selected index = %d, want 1", next.app.SelectedIndex)
+	}
+	if len(next.app.Messages) != 1 || next.app.Messages[0].ID != "cached-message" {
+		t.Fatalf("cached conversation was not shown immediately: %#v", next.app.Messages)
+	}
+	if cmd == nil {
+		t.Fatal("expected a delayed settle command")
+	}
+	if next.navigationGeneration != 1 {
+		t.Fatalf("navigation generation = %d, want 1", next.navigationGeneration)
+	}
+}
+
+func TestPanelWidthsStayValidInNarrowTerminals(t *testing.T) {
+	for total := 3; total <= 80; total++ {
+		chatWidth := chatPanelWidth(total)
+		messageWidth := msgPanelWidth(total)
+		if chatWidth < 0 || messageWidth < 0 {
+			t.Fatalf("total %d produced negative widths: chat=%d message=%d", total, chatWidth, messageWidth)
+		}
+		if chatWidth+messageWidth+2 > total {
+			t.Fatalf("total %d overflowed: chat=%d message=%d", total, chatWidth, messageWidth)
+		}
+	}
+}
+
+func TestInlinePreviewQueueHonorsConcurrencyLimit(t *testing.T) {
+	app := NewApp()
+	app.Features.FilePreviewInTerminal = true
+	model := NewModel(app, "client-id", "user-id")
+	for i := 0; i < 12; i++ {
+		name := fmt.Sprintf("preview-%d.png", i)
+		contentType := "image/png"
+		contentURL := fmt.Sprintf("https://example.com/preview-%d.png?run=concurrency", i)
+		app.Messages = append(app.Messages, Message{
+			ID: fmt.Sprintf("message-%d", i),
+			Attachments: []MessageAttachment{{
+				ID:          fmt.Sprintf("attachment-%d", i),
+				Name:        &name,
+				ContentType: &contentType,
+				ContentURL:  &contentURL,
+			}},
+		})
+	}
+
+	if cmd := model.queueInlineImagePreviews(4); cmd == nil {
+		t.Fatal("expected preview downloads to be queued")
+	}
+	if got := len(model.previewDownloads); got != 4 {
+		t.Fatalf("active preview downloads = %d, want 4", got)
+	}
+	if cmd := model.queueInlineImagePreviews(4); cmd != nil {
+		t.Fatal("queue should not exceed the active download limit")
+	}
+	if got := len(model.previewDownloads); got != 4 {
+		t.Fatalf("active preview downloads changed to %d, want 4", got)
+	}
+}
+
+func TestPersistentKittyImageTransmitsOnceThenPlaces(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "preview.png")
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	img := image.NewRGBA(image.Rect(0, 0, 16, 8))
+	for y := 0; y < 8; y++ {
+		for x := 0; x < 16; x++ {
+			img.Set(x, y, color.RGBA{R: 20, G: 180, B: 220, A: 255})
+		}
+	}
+	if err := png.Encode(file, img); err != nil {
+		file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	model := NewModel(NewApp(), "client-id", "user-id")
+	first := model.persistentKittySequence(path, 2, 3, 20, 6, 1)
+	if !strings.Contains(first, "a=t") || !strings.Contains(first, "a=p") {
+		t.Fatalf("first sequence must transmit and place: %q", first)
+	}
+	second := model.persistentKittySequence(path, 4, 5, 20, 6, 2)
+	if strings.Contains(second, "a=t") || !strings.Contains(second, "a=p") {
+		t.Fatalf("second sequence must only place: %q", second)
+	}
+}
+
+func BenchmarkRenderMessagesLongPosts(b *testing.B) {
+	chatName := "Engineering"
+	longBody := strings.Repeat("SELECT id, slug FROM doctors WHERE slug IS NOT NULL;\n", 80)
+	app := NewApp()
+	app.SelectedIndex = 0
+	app.Chats = []Chat{{ID: "chat-id", CachedDisplayName: &chatName}}
+	for i := 0; i < 50; i++ {
+		body := longBody
+		app.Messages = append(app.Messages, Message{
+			ID:              fmt.Sprintf("message-%d", i),
+			CreatedDateTime: "2026-07-10T00:00:00Z",
+			Body:            &MessageBody{Content: &body},
+		})
+	}
+	model := NewModel(app, "client-id", "user-id")
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = model.renderMessages(120, 40)
 	}
 }
 

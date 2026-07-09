@@ -783,7 +783,7 @@ func main() {
 	// the wcwidth-based layout used by the main view.
 	_ = writeTerminalSequence(os.Stdout, disableGraphemeClusters)
 	cleanupTerminal := func() {
-		_ = writeTerminalSequence(os.Stdout, "\x1b_Ga=d,d=a\x1b\\"+disableGraphemeClusters)
+		_ = writeTerminalSequence(os.Stdout, "\x1b_Ga=d,d=A\x1b\\"+disableGraphemeClusters)
 	}
 	defer cleanupTerminal()
 

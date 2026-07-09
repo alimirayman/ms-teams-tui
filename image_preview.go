@@ -78,6 +78,14 @@ type MsgPreviewDownloaded struct {
 	Silent   bool
 }
 
+type kittyPreparedImage struct {
+	Encoded string
+	Cols    int
+	Rows    int
+	PadX    int
+	PadY    int
+}
+
 // downloadPreviewCmd downloads a file attachment to cache silently.
 func downloadPreviewCmd(clientID, fileURL, destPath string, silent bool) tea.Cmd {
 	return func() tea.Msg {
@@ -90,16 +98,15 @@ func downloadPreviewCmd(clientID, fileURL, destPath string, silent bool) tea.Cmd
 	}
 }
 
-// kittyImageSequence generates the escape sequence to draw a high-quality centered image using Kitty Graphics Protocol.
-func kittyImageSequence(filePath string, x, y, cols, rows int) string {
+func prepareKittyImage(filePath string, cols, rows int) (kittyPreparedImage, error) {
 	file, err := os.Open(filePath)
 	if err != nil {
-		return ""
+		return kittyPreparedImage{}, err
 	}
 	img, _, err := image.Decode(file)
 	file.Close()
 	if err != nil {
-		return ""
+		return kittyPreparedImage{}, err
 	}
 
 	bounds := img.Bounds()
@@ -149,8 +156,6 @@ func kittyImageSequence(filePath string, x, y, cols, rows int) string {
 	// 5. Center the image inside the border box
 	padX := (cols - c) / 2
 	padY := (rows - r) / 2
-	targetX := x + padX
-	targetY := y + padY
 
 	// 6. Resample the image client-side to the exact target pixels using high-quality Lanczos3
 	resizedImg := resize.Resize(uint(newPixelW), uint(newPixelH), img, resize.Lanczos3)
@@ -158,16 +163,25 @@ func kittyImageSequence(filePath string, x, y, cols, rows int) string {
 	// 7. Encode as PNG
 	var buf bytes.Buffer
 	if err := png.Encode(&buf, resizedImg); err != nil {
+		return kittyPreparedImage{}, err
+	}
+	return kittyPreparedImage{
+		Encoded: base64.StdEncoding.EncodeToString(buf.Bytes()),
+		Cols:    c,
+		Rows:    r,
+		PadX:    padX,
+		PadY:    padY,
+	}, nil
+}
+
+func kittyTransmitSequence(image kittyPreparedImage, imageID uint32) string {
+	if image.Encoded == "" || imageID == 0 {
 		return ""
 	}
-	pngBytes := buf.Bytes()
-	encoded := base64.StdEncoding.EncodeToString(pngBytes)
 
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("\x1b[s\x1b[%d;%dH", targetY+1, targetX+1))
-
 	const chunkSize = 4096
-	totalLen := len(encoded)
+	totalLen := len(image.Encoded)
 
 	for i := 0; i < totalLen; i += chunkSize {
 		end := i + chunkSize
@@ -177,11 +191,53 @@ func kittyImageSequence(filePath string, x, y, cols, rows int) string {
 			mVal = 0
 		}
 
-		chunk := encoded[i:end]
+		chunk := image.Encoded[i:end]
 		if i == 0 {
-			sb.WriteString(fmt.Sprintf("\x1b_Ga=T,f=100,m=%d,c=%d,r=%d;%s\x1b\\", mVal, c, r, chunk))
+			sb.WriteString(fmt.Sprintf("\x1b_Ga=t,f=100,i=%d,q=2,m=%d;%s\x1b\\", imageID, mVal, chunk))
 		} else {
-			sb.WriteString(fmt.Sprintf("\x1b_Gm=%d;%s\x1b\\", mVal, chunk))
+			sb.WriteString(fmt.Sprintf("\x1b_Gm=%d,q=2;%s\x1b\\", mVal, chunk))
+		}
+	}
+	return sb.String()
+}
+
+func kittyPlaceSequence(image kittyPreparedImage, imageID, placementID uint32, x, y int) string {
+	if imageID == 0 || image.Cols <= 0 || image.Rows <= 0 {
+		return ""
+	}
+	targetX := x + image.PadX
+	targetY := y + image.PadY
+	return fmt.Sprintf(
+		"\x1b[s\x1b[%d;%dH\x1b_Ga=p,i=%d,p=%d,c=%d,r=%d,C=1,q=2\x1b\\\x1b[u",
+		targetY+1,
+		targetX+1,
+		imageID,
+		placementID,
+		image.Cols,
+		image.Rows,
+	)
+}
+
+// kittyImageSequence retains the one-shot path used by the standalone preview command.
+func kittyImageSequence(filePath string, x, y, cols, rows int) string {
+	prepared, err := prepareKittyImage(filePath, cols, rows)
+	if err != nil {
+		return ""
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("\x1b[s\x1b[%d;%dH", y+prepared.PadY+1, x+prepared.PadX+1))
+	const chunkSize = 4096
+	for i := 0; i < len(prepared.Encoded); i += chunkSize {
+		end := min(i+chunkSize, len(prepared.Encoded))
+		more := 1
+		if end == len(prepared.Encoded) {
+			more = 0
+		}
+		if i == 0 {
+			sb.WriteString(fmt.Sprintf("\x1b_Ga=T,f=100,m=%d,c=%d,r=%d;%s\x1b\\", more, prepared.Cols, prepared.Rows, prepared.Encoded[i:end]))
+		} else {
+			sb.WriteString(fmt.Sprintf("\x1b_Gm=%d;%s\x1b\\", more, prepared.Encoded[i:end]))
 		}
 	}
 

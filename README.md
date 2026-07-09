@@ -337,9 +337,12 @@ The external editor command can be configured in your `config.json` via the `"ex
 | ------------ | --------------------------------------------------------- |
 | `↑` / `k`    | Move up in list (within active section)                   |
 | `↓` / `j`    | Move down in list (within active section)                 |
+| `g` / `G`    | Jump to first / last conversation                         |
+| `Enter`      | Open highlighted conversation immediately                 |
 | `Tab`        | Switch between Chats & Channels sections (in Normal Mode) |
 | `PgUp` / `K` | Scroll messages up                                        |
 | `PgDn` / `J` | Scroll messages down                                      |
+| `Ctrl+u` / `Ctrl+d` | Scroll messages by half a page                    |
 | `/`          | Open search input (in Normal Mode)                        |
 | `Esc`        | Clear active search, or enter sleep/idle mode (Normal Mode) |
 | `c`          | Open chat search / chat creation popup                    |
@@ -355,6 +358,8 @@ The external editor command can be configured in your `config.json` via the `"ex
 | `n`          | Toggle notification mode                                  |
 | `?`          | Show help popup (keyboard reference + feature status)      |
 | `m`          | Enter/Exit **Message Mode** (to select/react/delete/copy) |
+| `z`          | Expand/collapse the message near the viewport              |
+| `z` / `Enter`| Expand/collapse selected message (Message Mode)            |
 | `v`          | View details/reactions of selected message (Message Mode) |
 | `Ctrl+g`     | View selected message in external editor (in Message Mode / Message View Popup) |
 | `Tab`        | Switch to attachment cursor in `v` popup (in Message View Popup) |

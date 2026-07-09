@@ -118,6 +118,7 @@ type App struct {
 	UrlSelectedIndex           int
 	UrlsInMessage              []string
 	MessageLineOffsets         []int
+	ExpandedMessages           map[string]bool
 	SearchMode                 bool
 	SearchActive               bool
 	SearchQuery                string
@@ -243,6 +244,7 @@ func NewApp() *App {
 		ChatMessagesLoadedOnce:    make(map[string]bool),
 		ChatCacheDirty:            make(map[string]bool),
 		SearchStates:              make(map[string]*ChatSearchState),
+		ExpandedMessages:          make(map[string]bool),
 		CachedMessages:            make(map[string][]Message),
 		CachedNextLink:            make(map[string]string),
 		TeamMembersCache:          make(map[string][]ChatMember),
