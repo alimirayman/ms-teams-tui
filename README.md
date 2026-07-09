@@ -1,8 +1,10 @@
-# teams
+# ms-teams-tui
 
 A keyboard-first Microsoft Teams client for the terminal, built for fast chat and channel navigation with Go, Bubble Tea, and Microsoft Graph.
 
-This repository is the [`alimirayman/teams-tui-go`](https://github.com/alimirayman/teams-tui-go) fork. It includes a redesigned, Unicode-safe timeline; inline image support for Kitty-compatible terminals and cmux; Adaptive Card rendering; attachment upload/download; cmux notifications; Saved Messages discovery; and Teams call handoff.
+The installed command is intentionally short: `teams`.
+
+This project includes a Unicode-safe timeline; inline image support for Kitty-compatible terminals and cmux; Adaptive Card rendering; attachment upload/download; cmux notifications; Saved Messages discovery; and Teams call handoff.
 
 ## Capabilities
 
@@ -28,27 +30,42 @@ This repository is the [`alimirayman/teams-tui-go`](https://github.com/alimiraym
 
 ## Requirements
 
-- Go 1.25 or newer
 - A Microsoft 365 account with Teams access
 - A Microsoft Entra app registration configured for device-code authentication
 - A Unicode terminal; cmux or another Kitty-compatible terminal is recommended for inline images
+- Go 1.26.5 or newer only when building from source
 
 ## Install
 
-Clone this fork and build the command as `teams`:
+### Install a Release
+
+Download the installer, review it, and run it. The installer verifies the release archive against the published SHA-256 checksum before replacing `teams`:
 
 ```bash
-git clone https://github.com/alimirayman/teams-tui-go.git
-cd teams-tui-go
-mkdir -p "$(go env GOPATH)/bin"
-go build -trimpath -ldflags="-s -w" -o "$(go env GOPATH)/bin/teams" .
+curl -fLo /tmp/ms-teams-tui-install.sh \
+  https://raw.githubusercontent.com/alimirayman/ms-teams-tui/main/scripts/install.sh
+less /tmp/ms-teams-tui-install.sh
+sh /tmp/ms-teams-tui-install.sh
+```
+
+The default destination is `~/.local/bin/teams`. Override it with `MS_TEAMS_TUI_INSTALL_DIR`, or install a specific version with `MS_TEAMS_TUI_VERSION=0.2.0`.
+
+### Build from Source
+
+Clone this repository and install the command as `teams`:
+
+```bash
+git clone https://github.com/alimirayman/ms-teams-tui.git
+cd ms-teams-tui
+make test vet security install
 ```
 
 Ensure the Go binary directory is on `PATH`:
 
 ```bash
-export PATH="$(go env GOPATH)/bin:$PATH"
+export PATH="$(go env GOPATH)/bin:$HOME/.local/bin:$PATH"
 teams
+teams --version
 ```
 
 Add that `export` line to `~/.zshrc`, `~/.bashrc`, or the relevant shell profile if needed.
@@ -56,10 +73,8 @@ Add that `export` line to `~/.zshrc`, `~/.bashrc`, or the relevant shell profile
 ### Upgrade
 
 ```bash
-cd /path/to/teams-tui-go
-git pull --ff-only origin main
-go test ./...
-go build -trimpath -ldflags="-s -w" -o "$(go env GOPATH)/bin/teams" .
+cd /path/to/ms-teams-tui
+make update
 ```
 
 ## Microsoft Entra Setup
@@ -107,8 +122,10 @@ The app creates `config.json` with all defaults on first run.
 
 | Platform | Config directory | Cache directory |
 | --- | --- | --- |
-| macOS | `~/Library/Application Support/teams-tui-go/` | `~/Library/Caches/teams-tui-go/` |
-| Linux | `${XDG_CONFIG_HOME:-~/.config}/teams-tui-go/` | `${XDG_CACHE_HOME:-~/.cache}/teams-tui-go/` |
+| macOS | `~/Library/Application Support/ms-teams-tui/` | `~/Library/Caches/ms-teams-tui/` |
+| Linux | `${XDG_CONFIG_HOME:-~/.config}/ms-teams-tui/` | `${XDG_CACHE_HOME:-~/.cache}/ms-teams-tui/` |
+
+On first launch after upgrading, real legacy `teams-tui-go` config/cache directories are renamed automatically. Tokens, settings, favourites, preview cache, and SQLite history are preserved. Symlinked legacy paths are rejected rather than followed.
 
 Environment variables `CLIENT_ID` and `TENANT_ID` override `config.json`. A project-local `.env` file is also loaded.
 
@@ -359,19 +376,34 @@ Use an up-to-date terminal and a font with Bengali glyph coverage. The TUI uses 
 | `filepicker_settings.json` in the config directory | Last file browser directory and sorting |
 | `token.json` in the cache directory | OAuth access and refresh tokens; mode `0600` |
 | `profile.json` in the cache directory | Cached signed-in profile |
-| `teams-tui-go.db` in the cache directory | Optional SQLite message history |
+| `ms-teams-tui.db` in the cache directory | Optional SQLite message history |
 | `previews/` in the cache directory | Downloaded terminal image previews |
+
+## Security and Privacy
+
+`ms-teams-tui` contains no telemetry, analytics, advertising, crash upload, remote logging, hidden webhook, or background updater. Runtime network access is limited to Microsoft authentication, Graph, and Microsoft-controlled OneDrive/SharePoint transfer hosts; Teams call links open only after an explicit keypress.
+
+Tokens and app state are stored in private local directories. Release CI runs the race detector, `go vet`, `govulncheck`, and `gosec`; release archives are checksum-verified by the installer. See [SECURITY.md](SECURITY.md) for the complete trust boundary and private vulnerability reporting process.
 
 ## Development
 
 ```bash
-go test ./...
+make version
+make test
 go test -race ./...
-go vet ./...
-go build -o bin/teams .
+make vet security build
+./bin/teams --version
 ```
 
-The GitHub Actions test workflow also builds and tests the project. Keep changes formatted with `gofmt` and add focused tests for Graph payload parsing, terminal-width behavior, and key-driven state transitions.
+See [AGENTS.md](AGENTS.md) for mandatory versioning and release rules. See [SECURITY.md](SECURITY.md) for the privacy model, trusted network destinations, local process execution, and private vulnerability reporting.
+
+## Releases
+
+`VERSION` is the source of truth. `make release-check` verifies the clean branch, pushed commit, semantic version, tests, race detector, vet, security scans, and embedded binary version. `make release` creates and pushes `v$(cat VERSION)`; GitHub Actions publishes static archives and `checksums.txt`.
+
+## Acknowledgements
+
+`ms-teams-tui` began from the work in [`nospor/teams-tui-go`](https://github.com/nospor/teams-tui-go). Thanks to Robert N. and the upstream contributors for the original Go/Bubble Tea Teams client that this project built upon.
 
 ## License
 

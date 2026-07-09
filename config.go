@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	pathpkg "path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -22,7 +23,7 @@ func LoadFavourites() map[string]bool {
 	if err != nil {
 		return make(map[string]bool)
 	}
-	data, err := os.ReadFile(filepath.Join(dir, "favourites.json"))
+	data, err := os.ReadFile(filepath.Join(dir, "favourites.json")) // #nosec G304 -- dir is the private OS config directory.
 	if err != nil {
 		return make(map[string]bool)
 	}
@@ -53,7 +54,7 @@ func SaveFavourites(favs map[string]bool) error {
 	if err != nil {
 		return fmt.Errorf("could not marshal favourites: %w", err)
 	}
-	return os.WriteFile(filepath.Join(dir, "favourites.json"), data, 0o600)
+	return writePrivateFile(filepath.Join(dir, "favourites.json"), data)
 }
 
 // LoadUnhiddenChannels reads the list of unhidden channel IDs from unhidden_channels.json.
@@ -63,7 +64,7 @@ func LoadUnhiddenChannels() map[string]bool {
 	if err != nil {
 		return make(map[string]bool)
 	}
-	data, err := os.ReadFile(filepath.Join(dir, "unhidden_channels.json"))
+	data, err := os.ReadFile(filepath.Join(dir, "unhidden_channels.json")) // #nosec G304 -- dir is the private OS config directory.
 	if err != nil {
 		return make(map[string]bool)
 	}
@@ -94,7 +95,7 @@ func SaveUnhiddenChannels(unhidden map[string]bool) error {
 	if err != nil {
 		return fmt.Errorf("could not marshal unhidden channels: %w", err)
 	}
-	return os.WriteFile(filepath.Join(dir, "unhidden_channels.json"), data, 0o600)
+	return writePrivateFile(filepath.Join(dir, "unhidden_channels.json"), data)
 }
 
 // FilepickerSettings holds the filepicker sorting and directory persistence.
@@ -111,7 +112,7 @@ func LoadFilepickerSettings() (string, string, string) {
 	if err != nil {
 		return "Name", "asc", ""
 	}
-	data, err := os.ReadFile(filepath.Join(dir, "filepicker_settings.json"))
+	data, err := os.ReadFile(filepath.Join(dir, "filepicker_settings.json")) // #nosec G304 -- dir is the private OS config directory.
 	if err != nil {
 		return "Name", "asc", ""
 	}
@@ -143,10 +144,13 @@ func SaveFilepickerSettings(sortBy string, sortOrder string, currentDirectory st
 	if err != nil {
 		return fmt.Errorf("could not marshal filepicker settings: %w", err)
 	}
-	return os.WriteFile(filepath.Join(dir, "filepicker_settings.json"), data, 0o600)
+	return writePrivateFile(filepath.Join(dir, "filepicker_settings.json"), data)
 }
 
-const appDirName = "teams-tui-go"
+const (
+	appDirName       = "ms-teams-tui"
+	legacyAppDirName = "teams-tui-go"
+)
 
 // defaultClientID is the Microsoft Teams client ID fallback.
 const defaultClientID = "d3590ed6-52b3-4102-aeff-aad2292ab01c"
@@ -186,30 +190,182 @@ type Config struct {
 	GitlabCommand          *string `json:"gitlab_command,omitempty"`
 }
 
-// GetAppDir returns ~/.config/teams-tui-go/, creating it if necessary.
+func resolvePrivateDataDir(base string) (string, error) {
+	target := filepath.Join(base, appDirName)
+	info, err := os.Lstat(target)
+	if err == nil {
+		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			return "", fmt.Errorf("application data path is not a real directory: %s", target)
+		}
+		if err := securePrivateDirectory(target); err != nil {
+			return "", err
+		}
+		return target, nil
+	}
+	if !os.IsNotExist(err) {
+		return "", fmt.Errorf("inspect application data directory: %w", err)
+	}
+
+	legacy := filepath.Join(base, legacyAppDirName)
+	if legacyInfo, legacyErr := os.Lstat(legacy); legacyErr == nil {
+		if legacyInfo.Mode()&os.ModeSymlink != 0 || !legacyInfo.IsDir() {
+			return "", fmt.Errorf("legacy application data path is not a real directory: %s", legacy)
+		}
+		if err := securePrivateDataTree(legacy); err != nil {
+			return "", err
+		}
+		if err := os.Rename(legacy, target); err != nil {
+			return "", fmt.Errorf("migrate %s to %s: %w", legacy, target, err)
+		}
+	} else if !os.IsNotExist(legacyErr) {
+		return "", fmt.Errorf("inspect legacy application data directory: %w", legacyErr)
+	}
+
+	if err := os.MkdirAll(target, 0o700); err != nil {
+		return "", fmt.Errorf("create application data directory: %w", err)
+	}
+	if err := securePrivateDirectory(target); err != nil {
+		return "", err
+	}
+	return target, nil
+}
+
+func securePrivateDataTree(rootPath string) error {
+	root, err := os.OpenRoot(rootPath)
+	if err != nil {
+		return fmt.Errorf("open application data root: %w", err)
+	}
+	defer root.Close()
+	return securePrivateRootEntry(root, ".")
+}
+
+func securePrivateRootEntry(root *os.Root, name string) error {
+	info, err := root.Lstat(name)
+	if err != nil {
+		return fmt.Errorf("inspect application data entry %s: %w", name, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("application data tree contains a symlink: %s", name)
+	}
+	if !info.IsDir() && !info.Mode().IsRegular() {
+		return fmt.Errorf("application data tree contains a non-regular file: %s", name)
+	}
+
+	file, err := root.Open(name)
+	if err != nil {
+		return fmt.Errorf("open application data entry %s: %w", name, err)
+	}
+	openedInfo, err := file.Stat()
+	if err != nil {
+		_ = file.Close()
+		return fmt.Errorf("inspect opened application data entry %s: %w", name, err)
+	}
+	if !openedInfo.IsDir() && !openedInfo.Mode().IsRegular() {
+		_ = file.Close()
+		return fmt.Errorf("opened application data entry is not regular: %s", name)
+	}
+	mode := os.FileMode(0o600)
+	if openedInfo.IsDir() {
+		mode = 0o700
+	}
+	if err := file.Chmod(mode); err != nil { // #nosec G302 -- private app data has intentionally restrictive permissions.
+		_ = file.Close()
+		return fmt.Errorf("secure application data entry %s: %w", name, err)
+	}
+
+	if !openedInfo.IsDir() {
+		if err := file.Close(); err != nil {
+			return fmt.Errorf("close application data entry %s: %w", name, err)
+		}
+		return nil
+	}
+	entries, err := file.ReadDir(-1)
+	closeErr := file.Close()
+	if err != nil {
+		return fmt.Errorf("read application data directory %s: %w", name, err)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("close application data directory %s: %w", name, closeErr)
+	}
+	for _, entry := range entries {
+		if err := securePrivateRootEntry(root, pathpkg.Join(name, entry.Name())); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func securePrivateDirectory(path string) error {
+	if err := os.Chmod(path, 0o700); err != nil { // #nosec G302 -- private app data has intentionally restrictive permissions.
+		return fmt.Errorf("secure application data directory: %w", err)
+	}
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return fmt.Errorf("inspect application data directory: %w", err)
+	}
+	for _, entry := range entries {
+		entryPath := filepath.Join(path, entry.Name())
+		if entry.Type()&os.ModeSymlink != 0 {
+			return fmt.Errorf("application data directory contains a symlink: %s", entryPath)
+		}
+		mode := os.FileMode(0o600)
+		if entry.IsDir() {
+			mode = 0o700
+		} else if !entry.Type().IsRegular() {
+			return fmt.Errorf("application data directory contains a non-regular file: %s", entryPath)
+		}
+		if err := os.Chmod(entryPath, mode); err != nil { // #nosec G302 -- private app data has intentionally restrictive permissions.
+			return fmt.Errorf("secure application data path %s: %w", entryPath, err)
+		}
+	}
+	return nil
+}
+
+func writePrivateFile(path string, data []byte) error {
+	if info, err := os.Lstat(path); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+			return fmt.Errorf("private data path is not a regular file: %s", path)
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("inspect private data path: %w", err)
+	}
+
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600) // #nosec G304 -- callers provide an app-owned path.
+	if err != nil {
+		return err
+	}
+	if err := file.Chmod(0o600); err != nil { // #nosec G302 -- private app data has intentionally restrictive permissions.
+		_ = file.Close()
+		return err
+	}
+	if _, err := file.Write(data); err != nil {
+		_ = file.Close()
+		return err
+	}
+	if err := file.Close(); err != nil {
+		return err
+	}
+	return nil
+}
+
+// GetAppDir returns the OS config directory for ms-teams-tui. Existing data
+// from teams-tui-go is migrated on first use.
 func GetAppDir() (string, error) {
 	base, err := os.UserConfigDir()
 	if err != nil {
 		return "", fmt.Errorf("could not determine config dir: %w", err)
 	}
-	dir := filepath.Join(base, appDirName)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return "", fmt.Errorf("could not create config dir: %w", err)
-	}
-	return dir, nil
+	return resolvePrivateDataDir(base)
 }
 
-// GetCacheDir returns ~/.cache/teams-tui-go/, creating it if necessary.
+// GetCacheDir returns the OS cache directory for ms-teams-tui. Existing data
+// from teams-tui-go is migrated on first use.
 func GetCacheDir() (string, error) {
 	base, err := os.UserCacheDir()
 	if err != nil {
 		return "", fmt.Errorf("could not determine cache dir: %w", err)
 	}
-	dir := filepath.Join(base, appDirName)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return "", fmt.Errorf("could not create cache dir: %w", err)
-	}
-	return dir, nil
+	return resolvePrivateDataDir(base)
 }
 
 // LoadConfig reads config.json from the app dir.
@@ -219,7 +375,7 @@ func LoadConfig() *Config {
 	if err != nil {
 		return nil
 	}
-	data, err := os.ReadFile(filepath.Join(dir, "config.json"))
+	data, err := os.ReadFile(filepath.Join(dir, "config.json")) // #nosec G304 -- dir is the private OS config directory.
 	if err != nil {
 		return nil
 	}
@@ -241,7 +397,7 @@ func InitConfig() {
 
 	var cfg Config
 	exists := true
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) // #nosec G304 -- path is generated inside the private OS config directory.
 	if err != nil {
 		exists = false
 	} else {
@@ -374,7 +530,7 @@ func SaveConfig(cfg *Config) error {
 	if err != nil {
 		return fmt.Errorf("could not marshal config: %w", err)
 	}
-	return os.WriteFile(filepath.Join(dir, "config.json"), data, 0o600)
+	return writePrivateFile(filepath.Join(dir, "config.json"), data)
 }
 
 // ResolveClientID returns the client ID using the precedence:

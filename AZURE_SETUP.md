@@ -1,8 +1,9 @@
-# Azure AD App Registration Setup
+# Microsoft Entra App Registration Setup
 
-This guide explains how to create your own Azure AD app registration so that teams-tui-go can authenticate with the Microsoft Graph API on your behalf.
+This guide explains how to create an app registration so that `ms-teams-tui` can authenticate with Microsoft Graph on your behalf. The installed command is `teams`.
 
-> **Note**: The app ships with a built-in fallback client ID. You only need to follow this guide if you want to use your own app registration (recommended for production use).
+> [!IMPORTANT]
+> Use your own app registration. The built-in upstream Microsoft client ID can fail with `AADSTS65002` because first-party Microsoft clients require preauthorization that tenant administrators cannot configure themselves.
 
 ---
 
@@ -17,7 +18,7 @@ Navigate to [https://portal.azure.com](https://portal.azure.com) and sign in wit
 1. Search for **"App registrations"** in the top search bar and click it.
 2. Click **"New registration"**.
 3. Fill in:
-   - **Name**: `teams-tui-go` (or any name you like)
+   - **Name**: `ms-teams-tui` (or any name you like)
    - **Supported account types**: Select **"Accounts in this organizational directory only"** unless you intentionally want to support other tenants.
    - **Redirect URI**: Leave blank (not needed for device code flow)
 4. Click **Register**.
@@ -43,7 +44,7 @@ Navigate to [https://portal.azure.com](https://portal.azure.com) and sign in wit
 2. Copy the **Application (client) ID** — this is your `CLIENT_ID`.
 3. Copy the **Directory (tenant) ID** — this is your `TENANT_ID`.
 
-### 6. Configure teams-tui-go
+### 6. Configure ms-teams-tui
 
 Set your client ID and tenant ID using either method:
 
@@ -55,7 +56,7 @@ CLIENT_ID=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
 TENANT_ID=yyyyyyyy-yyyy-yyyy-yyyy-yyyyyyyyyyyy
 ```
 
-**Method B — config file** (`~/Library/Application Support/teams-tui-go/config.json` on macOS, `~/.config/teams-tui-go/config.json` on Linux):
+**Method B — config file** (`~/Library/Application Support/ms-teams-tui/config.json` on macOS, `~/.config/ms-teams-tui/config.json` on Linux):
 ```json
 {
   "client_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
@@ -82,7 +83,7 @@ These permissions are needed for all core functionality. Every user must grant t
 
 ### Optional Feature Permissions
 
-The following permissions unlock additional features. Each feature can be **enabled or disabled independently** in `~/.config/teams-tui-go/config.json`. If a feature is disabled, its permission is never requested and users without access are completely unaffected.
+The following permissions unlock additional features. Each feature can be **enabled or disabled independently** in `~/.config/ms-teams-tui/config.json`. If a feature is disabled, its permission is never requested and users without access are completely unaffected.
 
 ---
 
@@ -203,10 +204,10 @@ When you enable a new feature in `config.json`, the **existing token does not au
 
 ```bash
 # Delete the cached token
-rm ~/.cache/teams-tui-go/token.json
+rm ~/.cache/ms-teams-tui/token.json
 
 # Restart the app — it will prompt you to authenticate again
-teams-tui-go
+teams
 ```
 
 The new device code login will request all permissions for your currently enabled features in one go.
@@ -230,4 +231,4 @@ The new device code login will request all permissions for your currently enable
 → `Team.ReadBasic.All` and `Channel.ReadBasic.All` may require admin consent in your tenant. Ask your IT administrator to grant consent in the Azure portal.
 
 **Permissions not working after changing config**
-→ Delete `~/.cache/teams-tui-go/token.json` and re-authenticate so that the new permissions are included in the device code flow.
+→ Delete `~/.cache/ms-teams-tui/token.json` and re-authenticate so that the new permissions are included in the device code flow.

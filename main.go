@@ -423,7 +423,7 @@ func loadChannelMessagesCmd(clientID, teamID, channelID string) tea.Cmd {
 // openExternalEditorCmd launches an external editor with the current content,
 // allowing the user to edit/compose or view a message, and returns MsgEditorFinished on exit.
 func openExternalEditorCmd(currentText, editorCmd string, readOnly bool) tea.Cmd {
-	tmpFile, err := os.CreateTemp("", "teams-tui-msg-*.txt")
+	tmpFile, err := os.CreateTemp("", "ms-teams-tui-msg-*.txt")
 	if err != nil {
 		return func() tea.Msg {
 			return MsgEditorFinished{Err: fmt.Errorf("could not create temporary file: %w", err)}
@@ -432,17 +432,22 @@ func openExternalEditorCmd(currentText, editorCmd string, readOnly bool) tea.Cmd
 	tmpPath := tmpFile.Name()
 
 	if _, err := tmpFile.WriteString(currentText); err != nil {
-		tmpFile.Close()
-		os.Remove(tmpPath)
+		_ = tmpFile.Close()
+		_ = os.Remove(tmpPath)
 		return func() tea.Msg {
 			return MsgEditorFinished{Err: fmt.Errorf("could not write to temporary file: %w", err)}
 		}
 	}
-	tmpFile.Close()
+	if err := tmpFile.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return func() tea.Msg {
+			return MsgEditorFinished{Err: fmt.Errorf("could not close temporary file: %w", err)}
+		}
+	}
 
-	c := exec.Command(editorCmd, tmpPath)
+	c := exec.Command(editorCmd, tmpPath) // #nosec G204 -- user-owned config selects an executable; no shell is involved.
 	return tea.ExecProcess(c, func(err error) tea.Msg {
-		defer os.Remove(tmpPath)
+		defer func() { _ = os.Remove(tmpPath) }()
 		if err != nil {
 			return MsgEditorFinished{Err: fmt.Errorf("editor failed: %w", err)}
 		}
@@ -451,7 +456,7 @@ func openExternalEditorCmd(currentText, editorCmd string, readOnly bool) tea.Cmd
 				ReadOnly: true,
 			}
 		}
-		contentBytes, err := os.ReadFile(tmpPath)
+		contentBytes, err := os.ReadFile(tmpPath) // #nosec G304 -- tmpPath was created by os.CreateTemp above.
 		if err != nil {
 			return MsgEditorFinished{Err: fmt.Errorf("could not read file: %w", err)}
 		}
@@ -488,7 +493,7 @@ func openURLCmd(url, browserCmd, youtrackCmd, gitlabCmd string) tea.Cmd {
 	}
 	args = append(args, url)
 
-	c := exec.Command(cmdName, args...)
+	c := exec.Command(cmdName, args...) // #nosec G204 -- command is user-configured and arguments bypass a shell.
 	return tea.ExecProcess(c, func(err error) tea.Msg {
 		return MsgURLOpened{Err: err}
 	})
@@ -498,7 +503,7 @@ func openURLCmd(url, browserCmd, youtrackCmd, gitlabCmd string) tea.Cmd {
 // and returns MsgFileAttached.
 func attachFileFromFilepathCmd(path string) tea.Cmd {
 	return func() tea.Msg {
-		data, err := os.ReadFile(path)
+		data, err := os.ReadFile(path) // #nosec G304 -- path is explicitly selected in the interactive file picker.
 		if err != nil {
 			return MsgFileAttached{Err: err}
 		}
@@ -529,7 +534,7 @@ func attachPastedImagesFromFilepathsCmd(paths []string, generation uint64) tea.C
 	return func() tea.Msg {
 		images := make([]PastedImage, 0, len(paths))
 		for _, path := range paths {
-			data, err := os.ReadFile(path)
+			data, err := os.ReadFile(path) // #nosec G304 -- path is supplied by an explicit terminal paste action and validated as an image.
 			if err != nil {
 				return MsgPastedImagesAttached{Generation: generation, Err: err}
 			}
@@ -562,7 +567,10 @@ func attachPastedImagesFromFilepathsCmd(paths []string, generation uint64) tea.C
 
 func cmuxCLIPath() string {
 	if bundled := strings.TrimSpace(os.Getenv("CMUX_BUNDLED_CLI_PATH")); bundled != "" {
-		if info, err := os.Stat(bundled); err == nil && !info.IsDir() {
+		bundled = filepath.Clean(bundled)
+		// The variable is set by cmux itself; require an absolute executable named cmux.
+		info, err := os.Stat(bundled) // #nosec G703 -- validated process environment is the documented cmux integration contract.
+		if err == nil && filepath.IsAbs(bundled) && filepath.Base(bundled) == "cmux" && info.Mode().IsRegular() && info.Mode().Perm()&0o111 != 0 {
 			return bundled
 		}
 	}
@@ -584,15 +592,15 @@ func sendCmuxNotification(senderName, body string) bool {
 		args = append(args, "--subtitle", senderName)
 	}
 	args = append(args, "--body", body)
-	return exec.Command(cli, args...).Run() == nil
+	return exec.Command(cli, args...).Run() == nil // #nosec G204 -- validated executable and fixed arguments, without a shell.
 }
 
 // sendDesktopNotification sends through cmux when available, then falls back
 // to the host operating system's notification service.
 func sendDesktopNotification(senderName string, body string) {
-	title := "TeamsTUI: New Message"
+	title := "ms-teams-tui: New Message"
 	if senderName != "" {
-		title = "TeamsTUI: " + senderName
+		title = "ms-teams-tui: " + senderName
 	}
 
 	finalBody := "New message received"
@@ -603,7 +611,7 @@ func sendDesktopNotification(senderName string, body string) {
 		return
 	}
 
-	beeep.AppName = "TeamsTUI"
+	beeep.AppName = "ms-teams-tui"
 	_ = beeep.Notify(title, finalBody, "")
 }
 
@@ -671,9 +679,11 @@ func loadInitialChatOrder(chats []Chat) ([]Chat, map[string]string, map[string]t
 // main
 // ---------------------------------------------------------------------------
 
-var version = "dev"
-
 func main() {
+	if len(os.Args) == 2 && (os.Args[1] == "--version" || os.Args[1] == "version") {
+		fmt.Println("ms-teams-tui " + displayVersion())
+		return
+	}
 	if len(os.Args) >= 3 && os.Args[1] == "preview-image" {
 		previewImage(os.Args[2])
 		os.Exit(0)
@@ -683,7 +693,7 @@ func main() {
 	http.DefaultClient.Timeout = 15 * time.Second
 
 	// 1. Banner.
-	fmt.Printf("TeamsTUI %s\n", version)
+	fmt.Printf("ms-teams-tui %s\n", displayVersion())
 	fmt.Println("================================")
 
 	// Initialize configuration and write defaults for any missing keys.

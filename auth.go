@@ -59,11 +59,11 @@ func saveToken(token *TokenResponse) error {
 	if err != nil {
 		return err
 	}
-	data, err := json.MarshalIndent(token, "", "  ")
+	data, err := json.MarshalIndent(token, "", "  ") // #nosec G117 -- OAuth refresh token persistence is required and written with mode 0600.
 	if err != nil {
 		return fmt.Errorf("could not marshal token: %w", err)
 	}
-	return os.WriteFile(path, data, 0o600)
+	return writePrivateFile(path, data)
 }
 
 // loadToken reads the token from disk.
@@ -73,7 +73,7 @@ func loadToken() (*TokenResponse, error) {
 	if err != nil {
 		return nil, err
 	}
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) // #nosec G304 -- path is generated inside the private application cache directory.
 	if os.IsNotExist(err) {
 		return nil, nil
 	}
@@ -133,8 +133,14 @@ func PollForToken(clientID, deviceCode string, interval int) (*TokenResponse, er
 			return nil, fmt.Errorf("token poll request failed: %w", err)
 		}
 
-		body, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
+		body, readErr := io.ReadAll(resp.Body)
+		closeErr := resp.Body.Close()
+		if readErr != nil {
+			return nil, fmt.Errorf("could not read token response: %w", readErr)
+		}
+		if closeErr != nil {
+			return nil, fmt.Errorf("could not close token response: %w", closeErr)
+		}
 
 		if resp.StatusCode == http.StatusOK {
 			var token TokenResponse

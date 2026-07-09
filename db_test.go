@@ -12,7 +12,7 @@ func TestDBOperations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetCacheDir failed: %v", err)
 	}
-	dbPath := filepath.Join(cacheDir, "teams-tui-go.db")
+	dbPath := filepath.Join(cacheDir, "ms-teams-tui.db")
 	backupPath := dbPath + ".bak"
 
 	// Backup existing DB if any

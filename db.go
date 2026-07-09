@@ -18,8 +18,20 @@ func InitDB() error {
 	if err != nil {
 		return fmt.Errorf("get cache dir: %w", err)
 	}
-	// Database path under ~/.cache/teams-tui-go/
-	dbPath := filepath.Join(cacheDir, "teams-tui-go.db")
+	dbPath := filepath.Join(cacheDir, "ms-teams-tui.db")
+	legacyDBPath := filepath.Join(cacheDir, "teams-tui-go.db")
+	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
+		if legacyInfo, legacyErr := os.Lstat(legacyDBPath); legacyErr == nil {
+			if legacyInfo.Mode()&os.ModeSymlink != 0 || !legacyInfo.Mode().IsRegular() {
+				return fmt.Errorf("legacy database is not a regular file: %s", legacyDBPath)
+			}
+			if err := os.Rename(legacyDBPath, dbPath); err != nil {
+				return fmt.Errorf("migrate legacy database: %w", err)
+			}
+		} else if !os.IsNotExist(legacyErr) {
+			return fmt.Errorf("inspect legacy database: %w", legacyErr)
+		}
+	}
 
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0o700); err != nil {
 		return fmt.Errorf("create cache directory: %w", err)

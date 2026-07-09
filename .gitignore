@@ -1,5 +1,6 @@
-# Binary
-teams-tui-go
+# Binaries
+teams
+ms-teams-tui
 bin/
 
 # Environment variables (may contain secrets)

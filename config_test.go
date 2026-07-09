@@ -15,6 +15,91 @@ func withTempConfigHome(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
 }
 
+func TestLegacyDataDirectoriesAreMigrated(t *testing.T) {
+	withTempConfigHome(t)
+
+	configBase, err := os.UserConfigDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyConfig := filepath.Join(configBase, legacyAppDirName)
+	if err := os.MkdirAll(legacyConfig, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(legacyConfig, "config.json"), []byte(`{"client_id":"preserved"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	newConfig, err := GetAppDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Base(newConfig) != appDirName {
+		t.Fatalf("config directory = %q", newConfig)
+	}
+	if _, err := os.Stat(filepath.Join(newConfig, "config.json")); err != nil {
+		t.Fatalf("migrated config missing: %v", err)
+	}
+	assertMode(t, newConfig, 0o700)
+	assertMode(t, filepath.Join(newConfig, "config.json"), 0o600)
+	if _, err := os.Stat(legacyConfig); !os.IsNotExist(err) {
+		t.Fatalf("legacy config directory still exists: %v", err)
+	}
+
+	cacheBase, err := os.UserCacheDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyCache := filepath.Join(cacheBase, legacyAppDirName)
+	if err := os.MkdirAll(legacyCache, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(legacyCache, "token.json"), []byte(`{"access_token":"preserved"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	newCache, err := GetCacheDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Base(newCache) != appDirName {
+		t.Fatalf("cache directory = %q", newCache)
+	}
+	if _, err := os.Stat(filepath.Join(newCache, "token.json")); err != nil {
+		t.Fatalf("migrated token missing: %v", err)
+	}
+	assertMode(t, newCache, 0o700)
+	assertMode(t, filepath.Join(newCache, "token.json"), 0o600)
+}
+
+func assertMode(t *testing.T, path string, want os.FileMode) {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != want {
+		t.Fatalf("%s mode = %o, want %o", path, got, want)
+	}
+}
+
+func TestSaveConfigRestrictsExistingFile(t *testing.T) {
+	withTempConfigHome(t)
+	appDir, err := GetAppDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(appDir, "config.json")
+	if err := os.WriteFile(path, []byte(`{}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tenantID := "tenant"
+	if err := SaveConfig(&Config{TenantID: &tenantID}); err != nil {
+		t.Fatal(err)
+	}
+	assertMode(t, path, 0o600)
+}
+
 func TestInitConfig(t *testing.T) {
 	withTempConfigHome(t)
 

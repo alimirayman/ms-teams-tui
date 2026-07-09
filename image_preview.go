@@ -99,12 +99,12 @@ func downloadPreviewCmd(clientID, fileURL, destPath string, silent bool) tea.Cmd
 }
 
 func prepareKittyImage(filePath string, cols, rows int) (kittyPreparedImage, error) {
-	file, err := os.Open(filePath)
+	file, err := os.Open(filePath) // #nosec G304 G703 -- filePath is an app cache path or an explicit preview-image argument.
 	if err != nil {
 		return kittyPreparedImage{}, err
 	}
+	defer func() { _ = file.Close() }()
 	img, _, err := image.Decode(file)
-	file.Close()
 	if err != nil {
 		return kittyPreparedImage{}, err
 	}

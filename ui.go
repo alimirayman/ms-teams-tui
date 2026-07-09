@@ -14,13 +14,13 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/alimirayman/ms-teams-tui/filepicker"
 	"github.com/atotto/clipboard"
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
-	"github.com/nospor/teams-tui-go/filepicker"
 	"golang.org/x/net/html"
 )
 
@@ -2482,7 +2482,7 @@ func (m Model) handleMessagePopupKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 					} else if att.ContentURL != nil && *att.ContentURL != "" {
 						name := "attachment"
 						if att.Name != nil && *att.Name != "" {
-							name = *att.Name
+							name = safeAttachmentFilename(*att.Name)
 						}
 						destPath := filepath.Join(getDownloadsDir(), name)
 						m.app.SetStatus("Downloading: "+name+" ...", 0)
@@ -3012,7 +3012,7 @@ func (m Model) writeAppState() Model {
 	if err == nil {
 		if cacheDir, err := GetCacheDir(); err == nil {
 			stateFile := filepath.Join(cacheDir, "state.json")
-			_ = os.WriteFile(stateFile, jsonData, 0o644)
+			_ = writePrivateFile(stateFile, jsonData)
 		}
 	}
 
@@ -7191,11 +7191,11 @@ func openFile(path string) error {
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
 	case "darwin":
-		cmd = exec.Command("open", path)
+		cmd = exec.Command("open", path) // #nosec G204 -- path is a user-requested downloaded attachment; no shell is involved.
 	case "windows":
-		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", path)
+		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", path) // #nosec G204 -- no shell is involved.
 	default:
-		cmd = exec.Command("xdg-open", path)
+		cmd = exec.Command("xdg-open", path) // #nosec G204 -- no shell is involved.
 	}
 	return cmd.Start()
 }

@@ -26,6 +26,16 @@ import (
 const graphAPIBase = "https://graph.microsoft.com/v1.0"
 const graphAPIBeta = "https://graph.microsoft.com/beta"
 
+var microsoftTransferClient = &http.Client{
+	Timeout: 15 * time.Second,
+	CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 10 {
+			return fmt.Errorf("too many redirects")
+		}
+		return validateMicrosoftTransferURL(req.URL.String())
+	},
+}
+
 // ---------------------------------------------------------------------------
 // Data models
 // ---------------------------------------------------------------------------
@@ -150,6 +160,51 @@ func sanitizeFilename(s string) string {
 		}
 		return r
 	}, s)
+}
+
+func safeAttachmentFilename(name string) string {
+	name = sanitizeFilename(filepath.Base(strings.TrimSpace(name)))
+	name = strings.TrimSpace(name)
+	if name == "" || name == "." || name == ".." {
+		return "attachment"
+	}
+	return name
+}
+
+func validateMicrosoftTransferURL(raw string) error {
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("invalid transfer URL: %w", err)
+	}
+	if parsed.Scheme != "https" || parsed.User != nil {
+		return fmt.Errorf("transfer URL must use HTTPS without user information")
+	}
+	if port := parsed.Port(); port != "" && port != "443" {
+		return fmt.Errorf("transfer URL uses an unsupported port")
+	}
+
+	host := strings.ToLower(strings.TrimSuffix(parsed.Hostname(), "."))
+	trustedExact := map[string]bool{
+		"graph.microsoft.com": true,
+		"1drv.ms":             true,
+		"onedrive.live.com":   true,
+		"api.onedrive.com":    true,
+	}
+	if trustedExact[host] {
+		return nil
+	}
+	for _, suffix := range []string{
+		".1drv.com",
+		".sharepoint.com",
+		".sharepoint-df.com",
+		".sharepointonline.com",
+		".storage.live.com",
+	} {
+		if strings.HasSuffix(host, suffix) && len(host) > len(suffix) {
+			return nil
+		}
+	}
+	return fmt.Errorf("untrusted transfer host %q", host)
 }
 
 func inlineImageName(alt string, counter int) string {
@@ -493,6 +548,9 @@ func uploadFileInSession(accessToken, createSessionURL string, content []byte) (
 	if sessionRes.UploadURL == "" {
 		return nil, fmt.Errorf("empty upload URL in response")
 	}
+	if err := validateMicrosoftTransferURL(sessionRes.UploadURL); err != nil {
+		return nil, fmt.Errorf("unsafe upload URL: %w", err)
+	}
 
 	totalSize := len(content)
 	// Chunk size must be a multiple of 320 KiB (327680 bytes)
@@ -517,15 +575,18 @@ func uploadFileInSession(accessToken, createSessionURL string, content []byte) (
 		req.Header.Set("Content-Length", fmt.Sprintf("%d", len(chunk)))
 		req.Header.Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", offset, end-1, totalSize))
 
-		resp, err := http.DefaultClient.Do(req)
+		resp, err := microsoftTransferClient.Do(req)
 		if err != nil {
 			return nil, fmt.Errorf("upload chunk bytes %d-%d: %w", offset, end-1, err)
 		}
-		defer resp.Body.Close()
 
 		resBytes, err := io.ReadAll(resp.Body)
+		closeErr := resp.Body.Close()
 		if err != nil {
 			return nil, fmt.Errorf("read chunk response body: %w", err)
+		}
+		if closeErr != nil {
+			return nil, fmt.Errorf("close chunk response body: %w", closeErr)
 		}
 
 		if resp.StatusCode >= 300 {
@@ -666,7 +727,7 @@ func GetMe(accessToken string) (*User, error) {
 	cacheDir, err := GetCacheDir()
 	if err == nil {
 		profilePath := filepath.Join(cacheDir, "profile.json")
-		if data, err := os.ReadFile(profilePath); err == nil {
+		if data, err := os.ReadFile(profilePath); err == nil { // #nosec G304 -- profilePath is generated in the private app cache.
 			var u User
 			if json.Unmarshal(data, &u) == nil {
 				return &u, nil
@@ -686,7 +747,7 @@ func GetMe(accessToken string) (*User, error) {
 
 	// Persist to cache.
 	if cacheDir != "" {
-		_ = os.WriteFile(filepath.Join(cacheDir, "profile.json"), body, 0o600)
+		_ = writePrivateFile(filepath.Join(cacheDir, "profile.json"), body)
 	}
 	return &u, nil
 }
@@ -2587,6 +2648,12 @@ func DownloadFile(accessToken, fileURL, destPath string) error {
 			actualURL = resolved
 		}
 	}
+	if strings.HasPrefix(actualURL, "/") {
+		actualURL = graphAPIBase + actualURL
+	}
+	if err := validateMicrosoftTransferURL(actualURL); err != nil {
+		return fmt.Errorf("DownloadFile: unsafe URL: %w", err)
+	}
 
 	req, err := http.NewRequest(http.MethodGet, actualURL, nil)
 	if err != nil {
@@ -2594,11 +2661,11 @@ func DownloadFile(accessToken, fileURL, destPath string) error {
 	}
 	// Only set the Bearer token for Graph API URLs; pre-authenticated
 	// @microsoft.graph.downloadUrl URLs already contain credentials.
-	if strings.Contains(actualURL, "graph.microsoft.com") {
+	if req.URL.Hostname() == "graph.microsoft.com" {
 		req.Header.Set("Authorization", "Bearer "+accessToken)
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := microsoftTransferClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("DownloadFile: request: %w", err)
 	}
@@ -2612,10 +2679,10 @@ func DownloadFile(accessToken, fileURL, destPath string) error {
 	if err != nil {
 		return fmt.Errorf("DownloadFile: read body: %w", err)
 	}
-	if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(destPath), 0o700); err != nil {
 		return fmt.Errorf("DownloadFile: create directories: %w", err)
 	}
-	return os.WriteFile(destPath, data, 0o600)
+	return writePrivateFile(destPath, data)
 }
 
 // ---------------------------------------------------------------------------

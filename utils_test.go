@@ -178,6 +178,46 @@ func TestInlineImageNameDropsLeakedHTMLAttributes(t *testing.T) {
 	}
 }
 
+func TestSafeAttachmentFilenamePreventsPathTraversal(t *testing.T) {
+	tests := map[string]string{
+		"../../.ssh/authorized_keys": "authorized_keys",
+		`..\..\secret.txt`:           ".._.._secret.txt",
+		"report?.pdf":                "report_.pdf",
+		"":                           "attachment",
+	}
+	for input, want := range tests {
+		if got := safeAttachmentFilename(input); got != want {
+			t.Errorf("safeAttachmentFilename(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
+func TestValidateMicrosoftTransferURL(t *testing.T) {
+	allowed := []string{
+		"https://graph.microsoft.com/v1.0/chats/1/messages/2/hostedContents/3/$value",
+		"https://tenant.sharepoint.com/sites/team/file.png",
+		"https://sn3302.up.1drv.com/up/session-token",
+	}
+	for _, target := range allowed {
+		if err := validateMicrosoftTransferURL(target); err != nil {
+			t.Errorf("trusted URL %q rejected: %v", target, err)
+		}
+	}
+
+	rejected := []string{
+		"http://graph.microsoft.com/v1.0/me",
+		"https://graph.microsoft.com.evil.example/steal",
+		"https://127.0.0.1/internal",
+		"https://tenant.sharepoint.com.evil.example/file",
+		"file:///etc/passwd",
+	}
+	for _, target := range rejected {
+		if err := validateMicrosoftTransferURL(target); err == nil {
+			t.Errorf("untrusted URL %q was accepted", target)
+		}
+	}
+}
+
 func TestHTMLToTextMentions(t *testing.T) {
 	// Force color profile for testing ANSI codes
 	oldProfile := lipgloss.ColorProfile()
