@@ -160,6 +160,25 @@ func createChatCmd(clientID, myUserID, otherUPN string) tea.Cmd {
 	}
 }
 
+func findSelfChatCmd(clientID, currentUserID string, chats []Chat, open bool) tea.Cmd {
+	return func() tea.Msg {
+		token, err := GetValidTokenSilent(clientID)
+		if err != nil {
+			return MsgSelfChatFound{Open: open, Err: err}
+		}
+		for _, chat := range chats {
+			if chat.ChatType != "oneOnOne" || len(chat.Members) != 0 {
+				continue
+			}
+			messages, _, err := GetMessages(token, chat.ID, 10)
+			if err == nil && isSelfChatMessages(messages, currentUserID) {
+				return MsgSelfChatFound{ChatID: chat.ID, Open: open}
+			}
+		}
+		return MsgSelfChatFound{Open: open, Err: fmt.Errorf("Saved messages chat was not found")}
+	}
+}
+
 // sendMessageCmd sends a message to a chat in the background.
 func sendMessageCmd(clientID, chatID, content string, members []ChatMember, images []PastedImage, files []PendingFile) tea.Cmd {
 	return func() tea.Msg {
@@ -541,7 +560,35 @@ func attachPastedImagesFromFilepathsCmd(paths []string, generation uint64) tea.C
 // Desktop notification
 // ---------------------------------------------------------------------------
 
-// sendDesktopNotification sends a native desktop notification.
+func cmuxCLIPath() string {
+	if bundled := strings.TrimSpace(os.Getenv("CMUX_BUNDLED_CLI_PATH")); bundled != "" {
+		if info, err := os.Stat(bundled); err == nil && !info.IsDir() {
+			return bundled
+		}
+	}
+	if os.Getenv("CMUX_SOCKET_PATH") == "" {
+		return ""
+	}
+	path, _ := exec.LookPath("cmux")
+	return path
+}
+
+func sendCmuxNotification(senderName, body string) bool {
+	cli := cmuxCLIPath()
+	if cli == "" {
+		return false
+	}
+
+	args := []string{"notify", "--title", "Microsoft Teams"}
+	if senderName != "" {
+		args = append(args, "--subtitle", senderName)
+	}
+	args = append(args, "--body", body)
+	return exec.Command(cli, args...).Run() == nil
+}
+
+// sendDesktopNotification sends through cmux when available, then falls back
+// to the host operating system's notification service.
 func sendDesktopNotification(senderName string, body string) {
 	title := "TeamsTUI: New Message"
 	if senderName != "" {
@@ -551,6 +598,9 @@ func sendDesktopNotification(senderName string, body string) {
 	finalBody := "New message received"
 	if body != "" {
 		finalBody = body
+	}
+	if sendCmuxNotification(senderName, finalBody) {
+		return
 	}
 
 	beeep.AppName = "TeamsTUI"

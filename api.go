@@ -90,17 +90,29 @@ func (msg *Message) GetPlainText() string {
 	if msg.PlainTextCached != nil {
 		return *msg.PlainTextCached
 	}
-	if msg.Body == nil || msg.Body.Content == nil {
-		empty := ""
-		msg.PlainTextCached = &empty
-		return empty
+	bodyContent := ""
+	if msg.Body != nil && msg.Body.Content != nil {
+		bodyContent = *msg.Body.Content
 	}
-	if *msg.Body.Content == "<systemEventMessage/>" {
+	if bodyContent == "<systemEventMessage/>" {
 		text := "── [system event] ──"
 		msg.PlainTextCached = &text
 		return text
 	}
-	text := HTMLToText(*msg.Body.Content, msg.Attachments, msg.Mentions)
+	text := HTMLToText(bodyContent, msg.Attachments, msg.Mentions)
+	for _, att := range msg.Attachments {
+		if !isAdaptiveCardAttachment(att) || strings.Contains(bodyContent, att.ID) {
+			continue
+		}
+		card := renderAdaptiveCardAttachment(att)
+		if card == "" {
+			continue
+		}
+		if text != "" {
+			text += "\n"
+		}
+		text += card
+	}
 	msg.PlainTextCached = &text
 	return text
 }
@@ -236,8 +248,9 @@ func FilterMessageAttachments(msg *Message) {
 	for _, att := range msg.Attachments {
 		if att.ContentType != nil {
 			ct := strings.ToLower(*att.ContentType)
-			// Ignore rich card attachments
-			if strings.Contains(ct, "card") {
+			// Keep Adaptive Cards for terminal rendering; discard other rich
+			// cards and URL previews that have no useful file operation.
+			if strings.Contains(ct, "card") && !isAdaptiveCardAttachment(att) {
 				continue
 			}
 			// Ignore reference attachments that do not point to SharePoint/OneDrive
@@ -277,7 +290,30 @@ type MessageAttachment struct {
 
 // MessageFrom holds the sender information.
 type MessageFrom struct {
-	User *MessageUser `json:"user,omitempty"`
+	User        *MessageUser `json:"user,omitempty"`
+	Application *MessageUser `json:"application,omitempty"`
+	Device      *MessageUser `json:"device,omitempty"`
+}
+
+func messageSender(msg Message) *MessageUser {
+	if msg.From == nil {
+		return nil
+	}
+	if msg.From.User != nil {
+		return msg.From.User
+	}
+	if msg.From.Application != nil {
+		return msg.From.Application
+	}
+	return msg.From.Device
+}
+
+func messageSenderName(msg Message) string {
+	sender := messageSender(msg)
+	if sender != nil && sender.DisplayName != nil {
+		return *sender.DisplayName
+	}
+	return ""
 }
 
 // MessageUser holds the sender display name and ID.
@@ -1965,6 +2001,17 @@ func HTMLToText(htmlContent string, attachments []MessageAttachment, mentions []
 					}
 				}
 				if att, ok := attByID[attID]; ok {
+					if isAdaptiveCardAttachment(att) {
+						if card := renderAdaptiveCardAttachment(att); card != "" {
+							if sb.Len() > 0 && lastChar != '\n' {
+								sb.WriteRune('\n')
+							}
+							sb.WriteString(card)
+							sb.WriteRune('\n')
+							lastChar = '\n'
+						}
+						continue
+					}
 					if att.ContentType != nil && *att.ContentType == "messageReference" {
 						// Render a quoted-message block: ▎ Sender: preview text
 						if att.Content != nil {

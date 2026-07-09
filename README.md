@@ -11,6 +11,7 @@ Authenticates via **OAuth2 Device Code Flow** (no browser redirect needed), fetc
 - 🔐 OAuth2 Device Code Flow — authenticate with your Microsoft account, no browser redirect required
 - 💬 List all your Teams chats (1:1, group, meetings) with computed display names
 - 📨 View messages in any chat with HTML-to-text rendering (images, attachments, emoji, **bold**, *italic*, ~~strikethrough~~, `code`, lists)
+- 🧩 Adaptive Cards — Workflow and bot cards render as structured terminal content with titles, facts, and usable links instead of blank timestamp rows
 - ❤️ Message Interactions — view and add reactions (Heart, Like, Laugh, etc.) to any message
 - 🔗 Clickable, Extractable & Openable URLs — links are clickable in supported terminals, can be extracted/copied via the `u` key, and opened in your browser/app via the `o` key
 - ✏️ Message Management — send, edit, and delete messages (includes multi-line support)
@@ -18,10 +19,13 @@ Authenticates via **OAuth2 Device Code Flow** (no browser redirect needed), fetc
 - 📋 **Clipboard Image Pasting** — paste images from your system clipboard directly into the compose text field using **Ctrl+V** (automatically base64 encoded and sent as inline HTML attachments)
 - 🗣️ **@Mentions & Autocomplete** — mention users in your messages. Typing `@` displays a dropdown list of chat/channel members. Navigate with Up/Down/Tab/Shift+Tab and press Enter to autocomplete the name. Mentions are sent as native Microsoft Teams mentions.
 - 🔔 Notification modes: None / Console (BEL + visual bell) / System (desktop) / Both
+- 🔔 cmux-native notifications — when running inside cmux, System/Both notifications use `cmux notify` for sidebar unread state and workspace navigation
 - 🔄 Smart Background Polling & Sleep Mode — active chat messages poll every 3 s and chat list updates every 15 s. Polling auto-pauses when the terminal window is unfocused (blurred) or when you manually enter sleep mode via the `Esc` key.
 - 😊 Emoticon Auto-replacement — popular text emoticons (like `:)`, `:D`, `<3`) are automatically converted to Unicode emojis
 - 🔍 Search History — search messages in any chat, recursively loading and indexing all conversation history in the background
 - 🔍 Chat Search & Open — filter locally loaded chats or open/start a 1:1 chat directly by entering a UPN/email (bypassing directory search)
+- 💾 Saved Messages — press `s` to jump directly to your Teams chat with yourself
+- 📞 Call handoff — press `C` for audio or `V` for video to open an official Teams call with the selected chat participants
 - ⭐ Favourites — pin any chat to the top of the sidebar with `f`; favourites are sorted alphabetically and stay anchored regardless of activity
 - ❓ Help Popup — press `?` at any time to show a keyboard shortcuts reference with optional feature status
 
@@ -101,7 +105,8 @@ By default the app uses Microsoft's public Teams client ID. To use your own Azur
 
 ### Notifications
 - **Toggle Mode**: Cycle through notification modes at runtime by pressing `n`. The chosen mode is automatically saved.
-- **Message Previews**: Configure desktop notifications in `~/.config/teams-tui-go/config.json`:
+- **cmux**: When `CMUX_SOCKET_PATH` is available, System/Both mode automatically uses `cmux notify`; otherwise it uses the operating system notification service.
+- **Message Previews**: Configure desktop notifications in the platform config path shown above:
 
   ```json
   {
@@ -346,6 +351,8 @@ The external editor command can be configured in your `config.json` via the `"ex
 | `/`          | Open search input (in Normal Mode)                        |
 | `Esc`        | Clear active search, or enter sleep/idle mode (Normal Mode) |
 | `c`          | Open chat search / chat creation popup                    |
+| `s`          | Open Saved Messages (chat with yourself)                  |
+| `C` / `V`    | Start Teams audio / video call for selected chat          |
 | `f`          | Toggle ★ favourite on selected chat (chats only)          |
 | `h`          | Show help; toggle hide/unhide when a channel is selected   |
 | `i`          | Enter compose mode                                        |

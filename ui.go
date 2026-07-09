@@ -20,7 +20,6 @@ import (
 	"github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
-	"github.com/gen2brain/beeep"
 	"github.com/nospor/teams-tui-go/filepicker"
 	"golang.org/x/net/html"
 )
@@ -191,6 +190,7 @@ type messageRenderCacheEntry struct {
 	SearchQuery string
 	Reactions   string
 	Attachments string
+	RichContent string
 	Lines       []string
 }
 
@@ -226,6 +226,12 @@ type MsgEditorFinished struct {
 // MsgURLOpened is sent when a URL-opening command finishes.
 type MsgURLOpened struct {
 	Err error
+}
+
+type MsgSelfChatFound struct {
+	ChatID string
+	Open   bool
+	Err    error
 }
 
 // ---------------------------------------------------------------------------
@@ -334,6 +340,7 @@ type Model struct {
 	navigationGeneration uint64
 	composeGeneration    uint64
 	pendingImagePastes   int
+	selfChatID           string
 }
 
 // NewModel creates the initial Bubble Tea model.
@@ -423,6 +430,7 @@ func NewModel(app *App, clientID, userID string) Model {
 func (m Model) Init() tea.Cmd {
 	cmds := []tea.Cmd{
 		tickCmd(),
+		findSelfChatCmd(m.clientID, m.userID, m.app.Chats, false),
 	}
 	if m.app.Features.TeamsChannels {
 		m.app.TeamsDataLoading = true
@@ -580,6 +588,14 @@ func (m Model) updateInternal(msg tea.Msg) (Model, tea.Cmd) {
 	case MsgChatsLoaded:
 		m.loadingChats = false
 		m.latestChats = msg.Chats
+		if m.selfChatID != "" {
+			name := "Saved messages"
+			for i := range m.latestChats {
+				if m.latestChats[i].ID == m.selfChatID {
+					m.latestChats[i].CachedDisplayName = &name
+				}
+			}
+		}
 		if msg.CurrentUserName != nil {
 			m.app.SetCurrentUser(*msg.CurrentUserName)
 		}
@@ -686,10 +702,7 @@ func (m Model) updateInternal(msg tea.Msg) (Model, tea.Cmd) {
 					}
 
 					// Trigger notification.
-					senderName := ""
-					if c.LastMessagePreview.From != nil && c.LastMessagePreview.From.User != nil && c.LastMessagePreview.From.User.DisplayName != nil {
-						senderName = *c.LastMessagePreview.From.User.DisplayName
-					}
+					senderName := messageSenderName(*c.LastMessagePreview)
 
 					// Build a temporary Message object for notification.
 					tempMsg := Message{
@@ -697,6 +710,8 @@ func (m Model) updateInternal(msg tea.Msg) (Model, tea.Cmd) {
 						CreatedDateTime: c.LastMessagePreview.CreatedDateTime,
 						From:            c.LastMessagePreview.From,
 						Body:            c.LastMessagePreview.Body,
+						Attachments:     c.LastMessagePreview.Attachments,
+						Mentions:        c.LastMessagePreview.Mentions,
 					}
 					m.notify(senderName, tempMsg)
 					m.promoteChat(c.ID)
@@ -1025,10 +1040,7 @@ func (m Model) updateInternal(msg tea.Msg) (Model, tea.Cmd) {
 							} else {
 								// Trigger notification if blurred, and mark as unread locally
 								m.lastReadMsgID[chat.ID] = old
-								senderName := ""
-								if latestMsg.From != nil && latestMsg.From.User != nil && latestMsg.From.User.DisplayName != nil {
-									senderName = *latestMsg.From.User.DisplayName
-								}
+								senderName := messageSenderName(latestMsg)
 								m.notify(senderName, latestMsg)
 							}
 						}
@@ -1206,6 +1218,33 @@ func (m Model) updateInternal(msg tea.Msg) (Model, tea.Cmd) {
 			m.app.SnapToBottom = true
 
 			cmds = append(cmds, loadMessagesCmd(m.clientID, chat.ID, m.app.SelectedIndex))
+		}
+
+	case MsgSelfChatFound:
+		if msg.Err != nil {
+			if msg.Open {
+				m.app.SetStatus(msg.Err.Error(), 5*time.Second)
+			}
+			break
+		}
+		m.selfChatID = msg.ChatID
+		name := "Saved messages"
+		for i := range m.latestChats {
+			if m.latestChats[i].ID == msg.ChatID {
+				m.latestChats[i].CachedDisplayName = &name
+			}
+		}
+		for i := range m.app.Chats {
+			if m.app.Chats[i].ID == msg.ChatID {
+				m.app.Chats[i].CachedDisplayName = &name
+				if msg.Open {
+					m.app.SelectedIndex = i
+					m.channelSelectedIndex = -1
+					m.app.SetStatus("Opened Saved messages", 3*time.Second)
+					cmds = append(cmds, m.scheduleConversationLoad())
+				}
+				break
+			}
 		}
 
 	// ── Focus / Blur ─────────────────────────────────────────────────────
@@ -1461,10 +1500,7 @@ func (m Model) updateInternal(msg tea.Msg) (Model, tea.Cmd) {
 							m.lastReadMsgID[msg.ChannelID] = newest.ID
 						} else {
 							// Trigger notification
-							senderName := ""
-							if newest.From != nil && newest.From.User != nil && newest.From.User.DisplayName != nil {
-								senderName = *newest.From.User.DisplayName
-							}
+							senderName := messageSenderName(newest)
 							m.notify(senderName, newest)
 						}
 					} else if !ok || m.lastMsgTime[msg.ChannelID].IsZero() {
@@ -1721,7 +1757,11 @@ func (m Model) toggleMessageExpanded(index int) Model {
 		m.app.ExpandedMessages = make(map[string]bool)
 	}
 	messageID := m.app.Messages[index].ID
-	m.app.ExpandedMessages[messageID] = !m.app.ExpandedMessages[messageID]
+	expanded, wasSet := m.app.ExpandedMessages[messageID]
+	if !wasSet && messageHasAdaptiveCard(m.app.Messages[index]) {
+		expanded = true
+	}
+	m.app.ExpandedMessages[messageID] = !expanded
 	m.app.SnapToBottom = false
 	return m
 }
@@ -1869,6 +1909,42 @@ func (m Model) handleNormalModeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		m.userSearchInput.SetValue("")
 		m.userSearchInput.Focus()
 		return m, textinput.Blink
+
+	case "s":
+		if m.selfChatID == "" {
+			m.app.SetStatus("Finding Saved messages...", 0)
+			return m, findSelfChatCmd(m.clientID, m.userID, m.app.Chats, true)
+		}
+		for i := range m.app.Chats {
+			if m.app.Chats[i].ID == m.selfChatID {
+				m.app.SelectedIndex = i
+				m.channelSelectedIndex = -1
+				m.app.SetStatus("Opened Saved messages", 3*time.Second)
+				return m, m.scheduleConversationLoad()
+			}
+		}
+
+	case "C", "V":
+		if m.channelSelectedIndex >= 0 {
+			m.app.SetStatus("Calls are available from chats, not channels", 4*time.Second)
+			break
+		}
+		chat := m.app.GetSelectedChat()
+		if chat == nil {
+			break
+		}
+		withVideo := msg.String() == "V"
+		target, err := teamsCallURL(*chat, withVideo)
+		if err != nil {
+			m.app.SetStatus(err.Error(), 4*time.Second)
+			break
+		}
+		kind := "audio"
+		if withVideo {
+			kind = "video"
+		}
+		m.app.SetStatus("Opening Teams "+kind+" call...", 4*time.Second)
+		return m, openURLCmd(target, m.app.BrowserCommand, m.app.YoutrackCommand, m.app.GitlabCommand)
 
 	case "/":
 		if m.app.SelectedIndex < 0 && m.channelSelectedIndex < 0 {
@@ -2621,40 +2697,36 @@ func (m Model) handleMessageSelectionModeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	case "u":
 		if m.app.MessageSelectedIndex < len(m.app.Messages) {
 			msgObj := m.app.Messages[m.app.MessageSelectedIndex]
-			if msgObj.Body != nil && msgObj.Body.Content != nil {
-				urls := ExtractURLs(*msgObj.Body.Content)
-				if len(urls) == 0 {
-					m.app.SetStatus("No URLs found in message", 3*time.Second)
-				} else if len(urls) == 1 {
-					if err := clipboard.WriteAll(urls[0]); err == nil {
-						m.app.SetStatus("URL copied to clipboard", 3*time.Second)
-					}
-					m.app.MessageSelectionMode = false
-				} else {
-					m.app.UrlSelectionMode = true
-					m.app.UrlSelectionOpenMode = false
-					m.app.UrlSelectedIndex = 0
-					m.app.UrlsInMessage = urls
+			urls := messageURLs(msgObj)
+			if len(urls) == 0 {
+				m.app.SetStatus("No URLs found in message", 3*time.Second)
+			} else if len(urls) == 1 {
+				if err := clipboard.WriteAll(urls[0]); err == nil {
+					m.app.SetStatus("URL copied to clipboard", 3*time.Second)
 				}
+				m.app.MessageSelectionMode = false
+			} else {
+				m.app.UrlSelectionMode = true
+				m.app.UrlSelectionOpenMode = false
+				m.app.UrlSelectedIndex = 0
+				m.app.UrlsInMessage = urls
 			}
 		}
 		return m, nil
 	case "o":
 		if m.app.MessageSelectedIndex < len(m.app.Messages) {
 			msgObj := m.app.Messages[m.app.MessageSelectedIndex]
-			if msgObj.Body != nil && msgObj.Body.Content != nil {
-				urls := ExtractURLs(*msgObj.Body.Content)
-				if len(urls) == 0 {
-					m.app.SetStatus("No URLs found in message", 3*time.Second)
-				} else if len(urls) == 1 {
-					m.app.MessageSelectionMode = false
-					return m, openURLCmd(urls[0], m.app.BrowserCommand, m.app.YoutrackCommand, m.app.GitlabCommand)
-				} else {
-					m.app.UrlSelectionMode = true
-					m.app.UrlSelectionOpenMode = true
-					m.app.UrlSelectedIndex = 0
-					m.app.UrlsInMessage = urls
-				}
+			urls := messageURLs(msgObj)
+			if len(urls) == 0 {
+				m.app.SetStatus("No URLs found in message", 3*time.Second)
+			} else if len(urls) == 1 {
+				m.app.MessageSelectionMode = false
+				return m, openURLCmd(urls[0], m.app.BrowserCommand, m.app.YoutrackCommand, m.app.GitlabCommand)
+			} else {
+				m.app.UrlSelectionMode = true
+				m.app.UrlSelectionOpenMode = true
+				m.app.UrlSelectedIndex = 0
+				m.app.UrlsInMessage = urls
 			}
 		}
 		return m, nil
@@ -3310,8 +3382,8 @@ func (m Model) renderRightPanel(w, h int) string {
 	} else if m.app.ReplyToMessage != nil {
 		ref := m.app.ReplyToMessage
 		sender := "someone"
-		if ref.From != nil && ref.From.User != nil && ref.From.User.DisplayName != nil {
-			sender = *ref.From.User.DisplayName
+		if name := messageSenderName(*ref); name != "" {
+			sender = name
 			if m.isOwn(*ref) {
 				sender = "yourself"
 			}
@@ -3350,12 +3422,9 @@ func (m Model) renderRightPanel(w, h int) string {
 		if len([]rune(preview)) > maxPrev {
 			preview = string([]rune(preview)[:maxPrev]) + "…"
 		}
-		sender := ""
-		if ref.From != nil && ref.From.User != nil && ref.From.User.DisplayName != nil {
-			sender = *ref.From.User.DisplayName
-			if m.isOwn(*ref) {
-				sender = "Me"
-			}
+		sender := messageSenderName(*ref)
+		if m.isOwn(*ref) {
+			sender = "Me"
 		}
 		bar := lipgloss.NewStyle().Foreground(lipgloss.Color("#4A90D9")).Bold(true).Render("▎")
 		name := lipgloss.NewStyle().Foreground(lipgloss.Color("#7EC8E3")).Bold(true).Render(sender)
@@ -3819,13 +3888,15 @@ func (m Model) cachedMessageLines(msg *Message, width int) []string {
 	}
 	reactions := renderReactions(msg.Reactions)
 	attachments := renderAttachmentSummary(*msg)
+	richContent := adaptiveCardSignature(msg.Attachments)
 	if cached, ok := m.messageRenderCache[msg.ID]; ok &&
 		cached.Width == width &&
 		cached.RawBody == rawBody &&
 		cached.Subject == msg.Subject &&
 		cached.SearchQuery == query &&
 		cached.Reactions == reactions &&
-		cached.Attachments == attachments {
+		cached.Attachments == attachments &&
+		cached.RichContent == richContent {
 		return cached.Lines
 	}
 	source := m.messageBodySource(msg, reactions, attachments)
@@ -3840,6 +3911,7 @@ func (m Model) cachedMessageLines(msg *Message, width int) []string {
 		SearchQuery: query,
 		Reactions:   reactions,
 		Attachments: attachments,
+		RichContent: richContent,
 		Lines:       lines,
 	}
 	return lines
@@ -3896,10 +3968,7 @@ func (m Model) renderMessages(w, h int) string {
 			pendingScrollLine = len(lines)
 		}
 
-		sender := ""
-		if msg.From != nil && msg.From.User != nil && msg.From.User.DisplayName != nil {
-			sender = *msg.From.User.DisplayName
-		}
+		sender := messageSenderName(msg)
 
 		msgTime, _ := time.Parse(time.RFC3339Nano, msg.CreatedDateTime)
 		msgTime = msgTime.Local()
@@ -3964,7 +4033,11 @@ func (m Model) renderMessages(w, h int) string {
 		}
 
 		msgLines := m.cachedMessageLines(&msgs[i], maxW-len(replyIndent))
-		msgLines = collapsedMessageLines(msgLines, m.app.ExpandedMessages[msg.ID])
+		expanded, wasSet := m.app.ExpandedMessages[msg.ID]
+		if !wasSet && messageHasAdaptiveCard(msg) {
+			expanded = true
+		}
+		msgLines = collapsedMessageLines(msgLines, expanded)
 		padding := 0
 		if alignRight {
 			maxMsgW := 0
@@ -4215,7 +4288,7 @@ func (m Model) statusHint() string {
 	case m.channelSelectedIndex >= 0:
 		return "LIST  j/k move  Enter open  g/G ends  Tab chats  m actions  z expand  i compose  h mute"
 	default:
-		return "LIST  j/k move  Enter open  g/G ends  Tab channels  m actions  z expand  i compose  / search"
+		return "LIST  j/k move  Enter open  Tab channels  m actions  i compose  s saved  C/V call"
 	}
 }
 
@@ -5327,8 +5400,8 @@ func (m Model) renderSearchPopup(w, h int) string {
 
 			// Render sender + date
 			sender := "Unknown"
-			if item.Message.From != nil && item.Message.From.User != nil && item.Message.From.User.DisplayName != nil {
-				sender = *item.Message.From.User.DisplayName
+			if name := messageSenderName(item.Message); name != "" {
+				sender = name
 			}
 			msgTime, _ := time.Parse(time.RFC3339Nano, item.Message.CreatedDateTime)
 			msgTime = msgTime.Local()
@@ -5547,37 +5620,33 @@ func (m Model) handleSearchPopupNavigationKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	case "u":
 		if len(m.app.SearchPopupResults) > 0 && m.app.SearchPopupSelectedIndex < len(m.app.SearchPopupResults) {
 			msgObj := m.app.SearchPopupResults[m.app.SearchPopupSelectedIndex].Message
-			if msgObj.Body != nil && msgObj.Body.Content != nil {
-				urls := ExtractURLs(*msgObj.Body.Content)
-				if len(urls) == 0 {
-					m.app.SetSearchStatus("No URLs found in message", 3*time.Second)
-				} else if len(urls) == 1 {
-					if err := clipboard.WriteAll(urls[0]); err == nil {
-						m.app.SetSearchStatus("URL copied to clipboard", 3*time.Second)
-					}
-				} else {
-					m.app.UrlSelectionMode = true
-					m.app.UrlSelectionOpenMode = false
-					m.app.UrlSelectedIndex = 0
-					m.app.UrlsInMessage = urls
+			urls := messageURLs(msgObj)
+			if len(urls) == 0 {
+				m.app.SetSearchStatus("No URLs found in message", 3*time.Second)
+			} else if len(urls) == 1 {
+				if err := clipboard.WriteAll(urls[0]); err == nil {
+					m.app.SetSearchStatus("URL copied to clipboard", 3*time.Second)
 				}
+			} else {
+				m.app.UrlSelectionMode = true
+				m.app.UrlSelectionOpenMode = false
+				m.app.UrlSelectedIndex = 0
+				m.app.UrlsInMessage = urls
 			}
 		}
 	case "o":
 		if len(m.app.SearchPopupResults) > 0 && m.app.SearchPopupSelectedIndex < len(m.app.SearchPopupResults) {
 			msgObj := m.app.SearchPopupResults[m.app.SearchPopupSelectedIndex].Message
-			if msgObj.Body != nil && msgObj.Body.Content != nil {
-				urls := ExtractURLs(*msgObj.Body.Content)
-				if len(urls) == 0 {
-					m.app.SetSearchStatus("No URLs found in message", 3*time.Second)
-				} else if len(urls) == 1 {
-					return m, openURLCmd(urls[0], m.app.BrowserCommand, m.app.YoutrackCommand, m.app.GitlabCommand)
-				} else {
-					m.app.UrlSelectionMode = true
-					m.app.UrlSelectionOpenMode = true
-					m.app.UrlSelectedIndex = 0
-					m.app.UrlsInMessage = urls
-				}
+			urls := messageURLs(msgObj)
+			if len(urls) == 0 {
+				m.app.SetSearchStatus("No URLs found in message", 3*time.Second)
+			} else if len(urls) == 1 {
+				return m, openURLCmd(urls[0], m.app.BrowserCommand, m.app.YoutrackCommand, m.app.GitlabCommand)
+			} else {
+				m.app.UrlSelectionMode = true
+				m.app.UrlSelectionOpenMode = true
+				m.app.UrlSelectedIndex = 0
+				m.app.UrlsInMessage = urls
 			}
 		}
 	}
@@ -5750,7 +5819,6 @@ func (m *Model) notifyReaction(chat Chat, msg *Message, newReactions []MessageRe
 			msgBody = string(runes[:40]) + "..."
 		}
 
-		title := fmt.Sprintf("TeamsTUI: %s", reactorName)
 		body := fmt.Sprintf("Reacted %s to: \"%s\"", emoji, msgBody)
 		if chatName != "" && chatName != reactorName {
 			body = fmt.Sprintf("Reacted %s to \"%s\" in %s", emoji, msgBody, chatName)
@@ -5761,13 +5829,11 @@ func (m *Model) notifyReaction(chat Chat, msg *Message, newReactions []MessageRe
 			fmt.Print("\a") // BEL
 			m.app.TriggerVisualBell()
 		case NotificationSystem:
-			beeep.AppName = "TeamsTUI"
-			_ = beeep.Notify(title, body, "")
+			go sendDesktopNotification(reactorName, body)
 		case NotificationBoth:
 			fmt.Print("\a")
 			m.app.TriggerVisualBell()
-			beeep.AppName = "TeamsTUI"
-			_ = beeep.Notify(title, body, "")
+			go sendDesktopNotification(reactorName, body)
 		}
 	}
 }
@@ -6172,8 +6238,10 @@ func (m Model) renderUserSearchPopup(w, h int) string {
 func viewableAttachments(msg Message) []MessageAttachment {
 	var out []MessageAttachment
 	for _, att := range msg.Attachments {
-		if att.ContentType != nil && strings.EqualFold(*att.ContentType, "messageReference") {
-			continue
+		if att.ContentType != nil {
+			if strings.EqualFold(*att.ContentType, "messageReference") || isAdaptiveCardAttachment(att) {
+				continue
+			}
 		}
 		out = append(out, att)
 	}
@@ -6253,9 +6321,10 @@ func (m Model) renderMessagePopup(w, h int) string {
 	m.app.Messages[m.app.MessageSelectedIndex].ProcessInlineImages()
 	msg := m.app.Messages[m.app.MessageSelectedIndex]
 
-	sender := "Unknown"
-	if msg.From != nil && msg.From.User != nil && msg.From.User.DisplayName != nil {
-		sender = *msg.From.User.DisplayName
+	sender := messageSenderName(msg)
+	if sender == "" {
+		sender = "Unknown"
+	} else {
 		if m.app.CurrentUserName != nil && sender == *m.app.CurrentUserName {
 			sender = "Me"
 		}
@@ -6622,6 +6691,8 @@ func (m Model) getHelpContentLines() []string {
 			{"v", "Preview the newest image in loaded messages"},
 			{"i", "Compose new message"},
 			{"c", "Open chat search / open chat"},
+			{"s", "Open Saved messages (chat with yourself)"},
+			{"C / V", "Start a Teams audio / video call from selected chat"},
 			{"/", "Search message history"},
 			{"f", "Toggle favourite (chats only)"},
 			{"h / ?", "Show this help (h toggles hide/unhide when a channel is focused)"},
