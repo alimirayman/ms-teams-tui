@@ -13,12 +13,12 @@ import (
 	"unicode/utf8"
 
 	"github.com/atotto/clipboard"
-	"github.com/nospor/teams-tui-go/filepicker"
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/gen2brain/beeep"
+	"github.com/nospor/teams-tui-go/filepicker"
 	"regexp"
 )
 
@@ -126,7 +126,6 @@ type MsgBackgroundMessagesLoaded struct {
 type MsgPollReactionsLoaded struct {
 	Results map[string][]Message
 }
-
 
 // MsgPresenceLoaded is sent when a user's presence status has been fetched.
 type MsgPresenceLoaded struct {
@@ -280,7 +279,6 @@ type Model struct {
 
 	// originalChannelIndex maps channel ID to its original index in its team's channel list when loaded.
 	originalChannelIndex map[string]int
-
 
 	// Channel sidebar navigation (used when teams_channels_enabled).
 	// channelSelectedIndex is an index into the flat list returned by allChannels().
@@ -1679,8 +1677,7 @@ func (m Model) handleNormalModeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		_ = SaveConfig(cfg)
 
 	case "?":
-		m.app.HelpPopupMode = true
-		m.app.HelpScrollOffset = 0
+		m = m.openHelp()
 
 	case "i":
 		if m.app.SelectedIndex < 0 && m.channelSelectedIndex < 0 {
@@ -1877,8 +1874,9 @@ func (m Model) handleNormalModeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		}
 
 	case "h":
-		// Toggle hide/unhide on the selected channel — no-op in chat mode.
+		// Toggle hide/unhide on the selected channel; otherwise use h as help.
 		if m.channelSelectedIndex < 0 {
+			m = m.openHelp()
 			break
 		}
 		chans := m.allChannels()
@@ -2310,6 +2308,10 @@ func (m Model) handleMessagePopupKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 
 func (m Model) handleMessageSelectionModeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	switch msg.String() {
+	case "?", "h":
+		m = m.openHelp()
+		return m, nil
+
 	case "esc", "m":
 		m.app.MessageSelectionMode = false
 		return m, nil
@@ -3495,7 +3497,6 @@ func (m Model) renderChatList(w, h int) string {
 	return strings.Join(lines, "\n")
 }
 
-
 // ---------------------------------------------------------------------------
 // Messages rendering
 // ---------------------------------------------------------------------------
@@ -3590,7 +3591,7 @@ func (m Model) renderMessages(w, h int) string {
 						color = lipgloss.Color("#5FAF87") // own reply color (greenish)
 					}
 					replyPrefix := lipgloss.NewStyle().Foreground(colDimGray).Render("  ↳ ")
-					header = replyPrefix + lipgloss.NewStyle().Foreground(color).Render(senderName + " " + dateStr)
+					header = replyPrefix + lipgloss.NewStyle().Foreground(color).Render(senderName+" "+dateStr)
 				}
 			} else {
 				if alignRight {
@@ -3780,16 +3781,56 @@ func (m Model) renderStatusBar(w int) string {
 			),
 		)
 	}
-	text := fmt.Sprintf("%s | Notification (n): %s", m.app.Status, m.app.NotificationMode)
+	parts := []string{m.app.Status}
+	if hint := m.statusHint(); hint != "" {
+		parts = append(parts, hint)
+	}
+	parts = append(parts, fmt.Sprintf("Notification (n): %s", m.app.NotificationMode))
+	text := strings.Join(parts, " | ")
 	if m.app.LoadingMessages && len(m.app.Messages) > 0 {
 		text = "⏳ Loading older messages... | " + text
 	}
+	text = truncate(text, w-4)
 	if m.app.VisualBellActive() {
 		return bellBorder.Width(w - 2).Height(1).Render(text)
 	}
 	return normalBorder.Width(w - 2).Height(1).Render(
 		lipgloss.NewStyle().Foreground(colGreen).Render(text),
 	)
+}
+
+func (m Model) statusHint() string {
+	switch {
+	case m.app.FilePickerPopupMode:
+		return "Files: j/k move, s sort, o order, Enter attach, Esc cancel"
+	case m.app.HelpPopupMode:
+		return "Help: j/k scroll, h/?/q/Esc close"
+	case m.app.PresencePopupMode:
+		return "Presence: j/k scroll, q/Esc close"
+	case m.app.UserProfilePopupMode:
+		return "Profile: q/Esc close"
+	case m.app.MessagePopupMode:
+		return "Message: j/k next, J/K scroll, Tab attachments, q/Esc close"
+	case m.app.InputMode:
+		return "Compose: Enter send, Alt+Enter newline, Ctrl+f attach, Ctrl+g editor, Esc cancel"
+	case m.app.UserSearchPopupMode:
+		return "Find chat: type, j/k move, Enter open, Esc close"
+	case m.app.SearchPopupMode:
+		return "Search: type/Enter, j/k results, y copy, o open, Esc close"
+	case m.app.UrlSelectionMode:
+		if m.app.UrlSelectionOpenMode {
+			return "Open URL: j/k move, Enter open, Esc cancel"
+		}
+		return "Copy URL: j/k move, Enter copy, Esc cancel"
+	case m.app.MessageSelectionMode:
+		return "Select: j/k move, v view, y copy, r react, a reply, e edit, h/? help, m/Esc exit"
+	case m.app.SelectedIndex < 0 && m.channelSelectedIndex < 0:
+		return "Sleep: j/k select, h/? help, q quit"
+	case m.channelSelectedIndex >= 0:
+		return "Channel: j/k move, Tab chats, i compose, m select, h hide, ? help"
+	default:
+		return "Chat: j/k move, Tab channels, i compose, m select, / search, h/? help"
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -5245,7 +5286,6 @@ func (m Model) updateCachedMessages(chatID string, msgs []Message) Model {
 	return m
 }
 
-
 type UserSearchItemType int
 
 const (
@@ -5469,7 +5509,7 @@ func (m Model) renderUserSearchPopup(w, h int) string {
 		if m.app.UserSearchSelectedIndex < 0 {
 			m.app.UserSearchSelectedIndex = 0
 		}
- 
+
 		linesRendered := 0
 		for idx, item := range items {
 			isSelected := idx == m.app.UserSearchSelectedIndex
@@ -5477,7 +5517,7 @@ func (m Model) renderUserSearchPopup(w, h int) string {
 			if isSelected {
 				prefix = "> "
 			}
- 
+
 			var line string
 			switch item.Type {
 			case UserSearchItemLocal:
@@ -5641,7 +5681,7 @@ func (m Model) renderMessagePopup(w, h int) string {
 		lipgloss.NewStyle().Foreground(colCyan).Bold(true).Render("Date: ") + timeStr,
 	}
 	if msg.Subject != "" {
-		headerLines = append(headerLines, lipgloss.NewStyle().Foreground(colCyan).Bold(true).Render("Subject: ") + msg.Subject)
+		headerLines = append(headerLines, lipgloss.NewStyle().Foreground(colCyan).Bold(true).Render("Subject: ")+msg.Subject)
 	}
 	headerLines = append(headerLines, "")
 
@@ -5914,6 +5954,12 @@ func (m Model) resolveReactorName(chat *Chat, r MessageReaction) string {
 // Help popup
 // ---------------------------------------------------------------------------
 
+func (m Model) openHelp() Model {
+	m.app.HelpPopupMode = true
+	m.app.HelpScrollOffset = 0
+	return m
+}
+
 func (m Model) getHelpContentLines() []string {
 	labelStyle := lipgloss.NewStyle().Foreground(colYellow).Bold(true)
 	keyStyle := lipgloss.NewStyle().Foreground(colCyan)
@@ -5932,11 +5978,10 @@ func (m Model) getHelpContentLines() []string {
 			{"c", "Open chat search / open chat"},
 			{"/", "Search message history"},
 			{"f", "Toggle favourite (chats only)"},
-			{"h", "Toggle hide/unhide channel (channels only)"},
+			{"h / ?", "Show this help (h toggles hide/unhide when a channel is focused)"},
 			{"p", "Presence status of chat participants (chats only, feature: presence_enabled)"},
 			{"n", "Cycle notification mode"},
 			{"ESC", "Enter sleep / idle mode (stop polling)"},
-			{"?", "Show this help"},
 			{"q / Ctrl+C", "Quit"},
 		}},
 		{"Message Selection (m)", [][2]string{
@@ -5951,6 +5996,7 @@ func (m Model) getHelpContentLines() []string {
 			{"e", "Edit message"},
 			{"p", "Presence status (feature: presence_enabled)"},
 			{"i", "User profile info (feature: user_profile_enabled)"},
+			{"h / ?", "Show this help"},
 			{"ESC / m", "Exit selection mode"},
 		}},
 		{"Message View Popup (v)", [][2]string{
@@ -6047,7 +6093,7 @@ func (m Model) clampHelpScrollOffset() {
 
 func (m Model) handleHelpPopupKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	switch msg.String() {
-	case "esc", "q", "?", "enter":
+	case "esc", "q", "?", "h", "enter":
 		m.app.HelpPopupMode = false
 	case "j", "down":
 		m.app.HelpScrollOffset++
@@ -6133,7 +6179,7 @@ func (m Model) renderHelpPopup(w, h int) string {
 	lines = append(lines, title, "")
 	lines = append(lines, visibleContent...)
 
-	footer := dimStyle.Italic(true).Render("Press ESC / q / ? to close")
+	footer := dimStyle.Italic(true).Render("Press ESC / q / ? / h to close")
 	lines = append(lines, footer)
 
 	return lipgloss.NewStyle().
@@ -6678,4 +6724,3 @@ func (m Model) renderFilePickerPopup(w, h int) string {
 		Width(w).Height(h).
 		Render(strings.Join(lines, "\n"))
 }
-

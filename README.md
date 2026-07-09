@@ -343,7 +343,7 @@ The external editor command can be configured in your `config.json` via the `"ex
 | `Esc`        | Clear active search, or enter sleep/idle mode (Normal Mode) |
 | `c`          | Open chat search / chat creation popup                    |
 | `f`          | Toggle ★ favourite on selected chat (chats only)          |
-| `h`          | Toggle hide/unhide on selected channel (channels only)    |
+| `h`          | Show help; toggle hide/unhide when a channel is selected   |
 | `i`          | Enter compose mode                                        |
 | `Ctrl+V`     | Paste image from clipboard (in Compose Mode)              |
 | `Ctrl+f`     | Browse and attach file from computer (in Compose Mode)    |
@@ -352,7 +352,7 @@ The external editor command can be configured in your `config.json` via the `"ex
 | `Alt+Enter`  | New line in message                                       |
 | `Esc`        | Cancel compose                                            |
 | `n`          | Toggle notification mode                                  |
-| `?`          | Show help popup (keyboard reference + feature status)     |
+| `?`          | Show help popup (keyboard reference + feature status)      |
 | `m`          | Enter/Exit **Message Mode** (to select/react/delete/copy) |
 | `v`          | View details/reactions of selected message (Message Mode) |
 | `Ctrl+g`     | View selected message in external editor (in Message Mode / Message View Popup) |
