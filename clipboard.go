@@ -20,10 +20,10 @@ type PastedImage struct {
 	ContentType string // e.g. "image/png", "image/jpeg"
 }
 
-// localImagePathsFromPaste returns local image files only when the entire
-// pasted payload consists of valid paths. Ordinary pasted text is untouched.
-func localImagePathsFromPaste(raw string) []string {
-	if path, ok := normalizePastedImagePath(raw); ok {
+// localFilePathsFromPaste returns local files only when the entire pasted
+// payload consists of valid paths. Ordinary pasted text is untouched.
+func localFilePathsFromPaste(raw string) []string {
+	if path, ok := normalizePastedFilePath(raw); ok {
 		return []string{path}
 	}
 
@@ -33,7 +33,7 @@ func localImagePathsFromPaste(raw string) []string {
 	}
 	paths := make([]string, 0, len(lines))
 	for _, line := range lines {
-		path, ok := normalizePastedImagePath(line)
+		path, ok := normalizePastedFilePath(line)
 		if !ok {
 			return nil
 		}
@@ -42,7 +42,7 @@ func localImagePathsFromPaste(raw string) []string {
 	return paths
 }
 
-func normalizePastedImagePath(raw string) (string, bool) {
+func normalizePastedFilePath(raw string) (string, bool) {
 	path := strings.TrimSpace(raw)
 	if path == "" {
 		return "", false
@@ -71,17 +71,35 @@ func normalizePastedImagePath(raw string) (string, bool) {
 		path = filepath.Join(home, strings.TrimPrefix(path, "~/"))
 	}
 	path = filepath.Clean(path)
-
-	switch strings.ToLower(filepath.Ext(path)) {
-	case ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff", ".heic", ".heif":
-	default:
-		return "", false
-	}
 	info, err := os.Stat(path)
 	if err != nil || !info.Mode().IsRegular() {
 		return "", false
 	}
 	return path, true
+}
+
+// localImagePathsFromPaste preserves the image-only helper used by callers
+// that cannot accept general file attachments.
+func localImagePathsFromPaste(raw string) []string {
+	paths := localFilePathsFromPaste(raw)
+	if len(paths) == 0 {
+		return nil
+	}
+	for _, path := range paths {
+		if !isImageFilePath(path) {
+			return nil
+		}
+	}
+	return paths
+}
+
+func isImageFilePath(path string) bool {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff", ".heic", ".heif":
+		return true
+	default:
+		return false
+	}
 }
 
 // GetClipboardImage tries to read an image from the clipboard.

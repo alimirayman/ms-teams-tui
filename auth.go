@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -29,6 +30,39 @@ type TokenResponse struct {
 	ExpiresIn    int     `json:"expires_in"`
 	RefreshToken *string `json:"refresh_token,omitempty"`
 	ExpiresAt    int64   `json:"expires_at"`
+}
+
+var activeSessionToken struct {
+	sync.RWMutex
+	accessToken string
+	expiresAt   int64
+}
+
+func rememberSessionToken(token *TokenResponse) {
+	if token == nil || token.AccessToken == "" {
+		return
+	}
+	activeSessionToken.Lock()
+	activeSessionToken.accessToken = token.AccessToken
+	activeSessionToken.expiresAt = token.ExpiresAt
+	activeSessionToken.Unlock()
+}
+
+func validSessionAccessToken() (string, bool) {
+	activeSessionToken.RLock()
+	defer activeSessionToken.RUnlock()
+	const bufferSeconds = 5 * 60
+	if activeSessionToken.accessToken == "" || time.Now().Unix()+bufferSeconds >= activeSessionToken.expiresAt {
+		return "", false
+	}
+	return activeSessionToken.accessToken, true
+}
+
+func clearSessionToken() {
+	activeSessionToken.Lock()
+	activeSessionToken.accessToken = ""
+	activeSessionToken.expiresAt = 0
+	activeSessionToken.Unlock()
 }
 
 // tokenErrorResponse is returned when token polling is not yet complete or fails.
@@ -210,15 +244,22 @@ func RefreshAccessToken(clientID, refreshToken, scopes string) (*TokenResponse, 
 func GetValidTokenSilent(clientID string) (string, error) {
 	token, err := loadToken()
 	if err != nil {
+		if accessToken, ok := validSessionAccessToken(); ok {
+			return accessToken, nil
+		}
 		return "", fmt.Errorf("could not load token: %w", err)
 	}
 	if token == nil {
+		if accessToken, ok := validSessionAccessToken(); ok {
+			return accessToken, nil
+		}
 		return "", fmt.Errorf("no cached token found")
 	}
 
 	// Check if token is still valid (with a 5-minute buffer).
 	const bufferSeconds = 5 * 60
 	if time.Now().Unix()+bufferSeconds < token.ExpiresAt {
+		rememberSessionToken(token)
 		return token.AccessToken, nil
 	}
 
@@ -230,6 +271,7 @@ func GetValidTokenSilent(clientID string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("token refresh failed: %w", err)
 	}
+	rememberSessionToken(newToken)
 	return newToken.AccessToken, nil
 }
 
@@ -259,5 +301,6 @@ func GetAccessToken(clientID string) (string, error) {
 	// Mask the token in output.
 	masked := strings.Repeat("*", 8)
 	_ = masked
+	rememberSessionToken(token)
 	return token.AccessToken, nil
 }

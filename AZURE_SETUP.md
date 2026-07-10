@@ -94,7 +94,7 @@ Enable in config:
 { "file_preview_enabled": true }
 ```
 
-Key binding: In the message view popup (`v`), press **Tab** to enter attachment cursor mode, then **Enter** to download. Files are saved to `~/Downloads/`.
+In the message view popup (`v`), press **Tab** to enter attachment cursor mode. Press **Space** for a cached quick preview or **Enter** to download and open from `~/Downloads/`.
 
 | Permission | Type | Admin Consent | Purpose |
 |------------|------|---------------|---------|
@@ -111,7 +111,7 @@ Enable in config:
 { "file_upload_enabled": true }
 ```
 
-Key binding: In compose mode (`i`), press **Ctrl+f** to open the offline file browser overlay. Select a file and press **Enter** to attach it.
+In compose mode (`i`), press **Ctrl+f** to open the offline file browser overlay. Type to fuzzy-filter the current directory, including dotfiles and dot-directories; use arrow keys to navigate and press **Enter** to attach. Pasting or dragging a local filepath into compose also attaches it directly.
 
 | Permission        | Type      | Admin Consent | Purpose                                                                                  |
 | ----------------- | --------- | ------------- | ---------------------------------------------------------------------------------------- |

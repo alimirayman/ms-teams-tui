@@ -499,65 +499,85 @@ func openURLCmd(url, browserCmd, youtrackCmd, gitlabCmd string) tea.Cmd {
 	})
 }
 
-// attachFileFromFilepathCmd asynchronously reads a file from disk, detects its content type,
-// and returns MsgFileAttached.
-func attachFileFromFilepathCmd(path string) tea.Cmd {
+const maxAttachmentSize = 50 * 1024 * 1024
+
+func readLocalAttachment(path string) (PendingFile, error) {
+	info, err := os.Stat(path) // #nosec G703 -- path comes from an explicit picker, paste, or drop action.
+	if err != nil {
+		return PendingFile{}, err
+	}
+	if !info.Mode().IsRegular() {
+		return PendingFile{}, fmt.Errorf("%s is not a regular file", filepath.Base(path))
+	}
+	if info.Size() > maxAttachmentSize {
+		return PendingFile{}, fmt.Errorf("%s exceeds the 50 MB limit", filepath.Base(path))
+	}
+
+	data, err := os.ReadFile(path) // #nosec G304 -- path comes from an explicit picker, paste, or drop action.
+	if err != nil {
+		return PendingFile{}, err
+	}
+	filename := filepath.Base(path)
+	contentType := http.DetectContentType(data)
+	switch strings.ToLower(filepath.Ext(filename)) {
+	case ".png":
+		contentType = "image/png"
+	case ".jpg", ".jpeg":
+		contentType = "image/jpeg"
+	case ".gif":
+		contentType = "image/gif"
+	case ".webp":
+		contentType = "image/webp"
+	case ".bmp":
+		contentType = "image/bmp"
+	case ".tif", ".tiff":
+		contentType = "image/tiff"
+	case ".heic":
+		contentType = "image/heic"
+	case ".heif":
+		contentType = "image/heif"
+	}
+	return PendingFile{Name: filename, Path: path, ContentType: contentType, Data: data}, nil
+}
+
+// attachFileFromFilepathCmd asynchronously reads a picker-selected file.
+func attachFileFromFilepathCmd(path string, generation uint64) tea.Cmd {
 	return func() tea.Msg {
-		data, err := os.ReadFile(path) // #nosec G304 -- path is explicitly selected in the interactive file picker.
+		file, err := readLocalAttachment(path)
 		if err != nil {
-			return MsgFileAttached{Err: err}
+			return MsgFileAttached{Generation: generation, Err: err}
 		}
-
-		filename := filepath.Base(path)
-		contentType := http.DetectContentType(data)
-
-		// DetectContentType can be generic; map common extension overrides for accuracy
-		ext := strings.ToLower(filepath.Ext(filename))
-		switch ext {
-		case ".png":
-			contentType = "image/png"
-		case ".jpg", ".jpeg":
-			contentType = "image/jpeg"
-		case ".gif":
-			contentType = "image/gif"
-		}
-
 		return MsgFileAttached{
-			Name:        filename,
-			ContentType: contentType,
-			Data:        data,
+			Name:        file.Name,
+			ContentType: file.ContentType,
+			Data:        file.Data,
+			Generation:  generation,
 		}
 	}
 }
 
-func attachPastedImagesFromFilepathsCmd(paths []string, generation uint64) tea.Cmd {
+func attachPastedFilesFromFilepathsCmd(paths []string, generation uint64, allowFiles bool) tea.Cmd {
 	return func() tea.Msg {
 		images := make([]PastedImage, 0, len(paths))
+		files := make([]PendingFile, 0, len(paths))
 		for _, path := range paths {
-			data, err := os.ReadFile(path) // #nosec G304 -- path is supplied by an explicit terminal paste action and validated as an image.
+			file, err := readLocalAttachment(path)
 			if err != nil {
-				return MsgPastedImagesAttached{Generation: generation, Err: err}
+				return MsgPastedFilesAttached{Generation: generation, Err: err}
 			}
-			contentType := http.DetectContentType(data)
-			switch strings.ToLower(filepath.Ext(path)) {
-			case ".png":
-				contentType = "image/png"
-			case ".jpg", ".jpeg":
-				contentType = "image/jpeg"
-			case ".gif":
-				contentType = "image/gif"
-			case ".webp":
-				contentType = "image/webp"
+			if strings.HasPrefix(file.ContentType, "image/") {
+				images = append(images, PastedImage{Bytes: file.Data, ContentType: file.ContentType})
+				continue
 			}
-			if !strings.HasPrefix(contentType, "image/") {
-				return MsgPastedImagesAttached{
+			if !allowFiles {
+				return MsgPastedFilesAttached{
 					Generation: generation,
-					Err:        fmt.Errorf("%s is not a supported image", filepath.Base(path)),
+					Err:        fmt.Errorf("file upload is disabled; enable file_upload_enabled to attach %s", file.Name),
 				}
 			}
-			images = append(images, PastedImage{Bytes: data, ContentType: contentType})
+			files = append(files, file)
 		}
-		return MsgPastedImagesAttached{Images: images, Generation: generation}
+		return MsgPastedFilesAttached{Images: images, Files: files, Generation: generation}
 	}
 }
 

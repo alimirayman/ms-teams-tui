@@ -15,6 +15,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/dustin/go-humanize"
+	"github.com/sahilm/fuzzy"
 )
 
 type SortBy int
@@ -69,7 +70,7 @@ func New() Model {
 		selected:         0,
 		ShowPermissions:  true,
 		ShowSize:         true,
-		ShowHidden:       false,
+		ShowHidden:       true,
 		DirAllowed:       false,
 		FileAllowed:      true,
 		AutoHeight:       true,
@@ -83,6 +84,7 @@ func New() Model {
 		Styles:           DefaultStyles(),
 		SortBy:           SortByName,
 		SortOrder:        SortAscending,
+		Query:            "",
 	}
 }
 
@@ -119,17 +121,17 @@ type KeyMap struct {
 // DefaultKeyMap defines the default keybindings.
 func DefaultKeyMap() KeyMap {
 	return KeyMap{
-		GoToTop:   key.NewBinding(key.WithKeys("g"), key.WithHelp("g", "first")),
-		GoToLast:  key.NewBinding(key.WithKeys("G"), key.WithHelp("G", "last")),
-		Down:      key.NewBinding(key.WithKeys("j", "down", "ctrl+n"), key.WithHelp("j", "down")),
-		Up:        key.NewBinding(key.WithKeys("k", "up", "ctrl+p"), key.WithHelp("k", "up")),
-		PageUp:    key.NewBinding(key.WithKeys("K", "pgup"), key.WithHelp("pgup", "page up")),
-		PageDown:  key.NewBinding(key.WithKeys("J", "pgdown"), key.WithHelp("pgdown", "page down")),
-		Back:      key.NewBinding(key.WithKeys("h", "backspace", "left", "esc"), key.WithHelp("h", "back")),
-		Open:      key.NewBinding(key.WithKeys("l", "right", "enter"), key.WithHelp("l", "open")),
+		GoToTop:   key.NewBinding(key.WithKeys("home"), key.WithHelp("home", "first")),
+		GoToLast:  key.NewBinding(key.WithKeys("end"), key.WithHelp("end", "last")),
+		Down:      key.NewBinding(key.WithKeys("down", "ctrl+n"), key.WithHelp("down", "down")),
+		Up:        key.NewBinding(key.WithKeys("up", "ctrl+p"), key.WithHelp("up", "up")),
+		PageUp:    key.NewBinding(key.WithKeys("pgup"), key.WithHelp("pgup", "page up")),
+		PageDown:  key.NewBinding(key.WithKeys("pgdown"), key.WithHelp("pgdown", "page down")),
+		Back:      key.NewBinding(key.WithKeys("left"), key.WithHelp("left", "parent")),
+		Open:      key.NewBinding(key.WithKeys("right", "enter"), key.WithHelp("enter", "open")),
 		Select:    key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "select")),
-		SortType:  key.NewBinding(key.WithKeys("s", "ctrl+s"), key.WithHelp("s", "toggle sort")),
-		SortOrder: key.NewBinding(key.WithKeys("o", "ctrl+o"), key.WithHelp("o", "toggle sort order")),
+		SortType:  key.NewBinding(key.WithKeys("ctrl+s"), key.WithHelp("ctrl+s", "toggle sort")),
+		SortOrder: key.NewBinding(key.WithKeys("ctrl+o"), key.WithHelp("ctrl+o", "toggle sort order")),
 	}
 }
 
@@ -186,6 +188,7 @@ type Model struct {
 	AllowedTypes []string
 
 	KeyMap          KeyMap
+	allFiles        []os.DirEntry
 	files           []os.DirEntry
 	ShowPermissions bool
 	ShowSize        bool
@@ -212,6 +215,7 @@ type Model struct {
 	Styles    Styles
 	SortBy    SortBy
 	SortOrder SortOrder
+	Query     string
 }
 
 type stack struct {
@@ -248,35 +252,92 @@ func (m *Model) popView() (int, int, int) {
 }
 
 func sortEntries(entries []os.DirEntry, sortBy SortBy, sortOrder SortOrder) {
+	if sortBy == SortByDatetime {
+		type datedEntry struct {
+			entry   os.DirEntry
+			modTime int64
+		}
+		dated := make([]datedEntry, len(entries))
+		for i, entry := range entries {
+			dated[i].entry = entry
+			if info, err := entry.Info(); err == nil {
+				dated[i].modTime = info.ModTime().UnixNano()
+			}
+		}
+		sort.SliceStable(dated, func(i, j int) bool {
+			if dated[i].entry.IsDir() != dated[j].entry.IsDir() {
+				return dated[i].entry.IsDir()
+			}
+			if dated[i].modTime == dated[j].modTime {
+				return strings.ToLower(dated[i].entry.Name()) < strings.ToLower(dated[j].entry.Name())
+			}
+			if sortOrder == SortAscending {
+				return dated[i].modTime < dated[j].modTime
+			}
+			return dated[i].modTime > dated[j].modTime
+		})
+		for i := range dated {
+			entries[i] = dated[i].entry
+		}
+		return
+	}
+
 	sort.Slice(entries, func(i, j int) bool {
 		if entries[i].IsDir() != entries[j].IsDir() {
 			return entries[i].IsDir()
 		}
-
-		if sortBy == SortByDatetime {
-			infoI, errI := entries[i].Info()
-			infoJ, errJ := entries[j].Info()
-			if errI != nil || errJ != nil {
-				if sortOrder == SortAscending {
-					return entries[i].Name() < entries[j].Name()
-				}
-				return entries[i].Name() > entries[j].Name()
-			}
-			if sortOrder == SortAscending {
-				return infoI.ModTime().Before(infoJ.ModTime())
-			}
-			return infoI.ModTime().After(infoJ.ModTime())
-		}
-
 		if sortOrder == SortAscending {
-			return entries[i].Name() < entries[j].Name()
+			return strings.ToLower(entries[i].Name()) < strings.ToLower(entries[j].Name())
 		}
-		return entries[i].Name() > entries[j].Name()
+		return strings.ToLower(entries[i].Name()) > strings.ToLower(entries[j].Name())
 	})
 }
 
 func (m *Model) sortFiles() {
-	sortEntries(m.files, m.SortBy, m.SortOrder)
+	sortEntries(m.allFiles, m.SortBy, m.SortOrder)
+	m.applyFilter()
+}
+
+func (m *Model) resetViewport() {
+	m.selected = 0
+	m.min = 0
+	m.max = max(m.Height-1, 0)
+	if len(m.files) > 0 && m.max >= len(m.files) {
+		m.max = len(m.files) - 1
+	}
+}
+
+func (m *Model) applyFilter() {
+	query := strings.TrimSpace(m.Query)
+	if query == "" {
+		m.files = append(m.files[:0], m.allFiles...)
+		m.resetViewport()
+		return
+	}
+
+	names := make([]string, len(m.allFiles))
+	for i, entry := range m.allFiles {
+		names[i] = entry.Name()
+	}
+	matches := fuzzy.Find(query, names)
+	filtered := make([]os.DirEntry, 0, len(matches))
+	for _, match := range matches {
+		filtered = append(filtered, m.allFiles[match.Index])
+	}
+	m.files = filtered
+	m.resetViewport()
+
+}
+
+// ResetFilter clears the type-ahead query while keeping the current directory.
+func (m *Model) ResetFilter() {
+	m.Query = ""
+	m.applyFilter()
+}
+
+// MatchCount returns the visible and total entry counts for the current directory.
+func (m Model) MatchCount() (int, int) {
+	return len(m.files), len(m.allFiles)
 }
 
 func (m Model) readDir(path string, showHidden bool) tea.Cmd {
@@ -324,14 +385,15 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		if msg.id != m.id {
 			break
 		}
-		m.files = msg.entries
-		m.max = max(m.max, m.Height-1)
+		m.allFiles = msg.entries
+		m.applyFilter()
 	case tea.WindowSizeMsg:
 		if m.AutoHeight {
 			m.Height = msg.Height - marginBottom
 		}
 		m.max = m.Height - 1
 	case tea.KeyMsg:
+		m.Path = ""
 		switch {
 		case key.Matches(msg, m.KeyMap.SortType):
 			if m.SortBy == SortByName {
@@ -340,9 +402,6 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 				m.SortBy = SortByName
 			}
 			m.sortFiles()
-			m.selected = 0
-			m.min = 0
-			m.max = m.Height - 1
 			return m, nil
 
 		case key.Matches(msg, m.KeyMap.SortOrder):
@@ -352,9 +411,6 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 				m.SortOrder = SortAscending
 			}
 			m.sortFiles()
-			m.selected = 0
-			m.min = 0
-			m.max = m.Height - 1
 			return m, nil
 
 		case key.Matches(msg, m.KeyMap.GoToTop):
@@ -362,10 +418,16 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			m.min = 0
 			m.max = m.Height - 1
 		case key.Matches(msg, m.KeyMap.GoToLast):
+			if len(m.files) == 0 {
+				break
+			}
 			m.selected = len(m.files) - 1
-			m.min = len(m.files) - m.Height
+			m.min = max(len(m.files)-m.Height, 0)
 			m.max = len(m.files) - 1
 		case key.Matches(msg, m.KeyMap.Down):
+			if len(m.files) == 0 {
+				break
+			}
 			m.selected++
 			if m.selected >= len(m.files) {
 				m.selected = len(m.files) - 1
@@ -375,6 +437,9 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 				m.max++
 			}
 		case key.Matches(msg, m.KeyMap.Up):
+			if len(m.files) == 0 {
+				break
+			}
 			m.selected--
 			if m.selected < 0 {
 				m.selected = 0
@@ -384,6 +449,9 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 				m.max--
 			}
 		case key.Matches(msg, m.KeyMap.PageDown):
+			if len(m.files) == 0 {
+				break
+			}
 			m.selected += m.Height
 			if m.selected >= len(m.files) {
 				m.selected = len(m.files) - 1
@@ -393,9 +461,12 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 
 			if m.max >= len(m.files) {
 				m.max = len(m.files) - 1
-				m.min = m.max - m.Height
+				m.min = max(m.max-m.Height+1, 0)
 			}
 		case key.Matches(msg, m.KeyMap.PageUp):
+			if len(m.files) == 0 {
+				break
+			}
 			m.selected -= m.Height
 			if m.selected < 0 {
 				m.selected = 0
@@ -409,6 +480,7 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			}
 		case key.Matches(msg, m.KeyMap.Back):
 			m.CurrentDirectory = filepath.Dir(m.CurrentDirectory)
+			m.Query = ""
 			if m.selectedStack.Length() > 0 {
 				m.selected, m.min, m.max = m.popView()
 			} else {
@@ -453,11 +525,24 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			}
 
 			m.CurrentDirectory = filepath.Join(m.CurrentDirectory, f.Name())
+			m.Query = ""
 			m.pushView(m.selected, m.min, m.max)
 			m.selected = 0
 			m.min = 0
 			m.max = m.Height - 1
 			return m, m.readDir(m.CurrentDirectory, m.ShowHidden)
+		case msg.String() == "backspace":
+			queryRunes := []rune(m.Query)
+			if len(queryRunes) > 0 {
+				m.Query = string(queryRunes[:len(queryRunes)-1])
+				m.applyFilter()
+			}
+		case msg.String() == "ctrl+u":
+			m.Query = ""
+			m.applyFilter()
+		case msg.Type == tea.KeyRunes && !msg.Alt:
+			m.Query += string(msg.Runes)
+			m.applyFilter()
 		}
 	}
 	return m, nil
@@ -538,7 +623,7 @@ func (m Model) View() string {
 		s.WriteRune('\n')
 	}
 
-	for i := lipgloss.Height(s.String()); i <= m.Height; i++ {
+	for i := lipgloss.Height(s.String()); i < m.Height; i++ {
 		s.WriteRune('\n')
 	}
 
@@ -566,7 +651,7 @@ func (m Model) DidSelectDisabledFile(msg tea.Msg) (bool, string) {
 }
 
 func (m Model) didSelectFile(msg tea.Msg) (bool, string) {
-	if len(m.files) == 0 {
+	if len(m.files) == 0 || m.Path == "" {
 		return false, ""
 	}
 	switch msg := msg.(type) {
@@ -597,7 +682,7 @@ func (m Model) didSelectFile(msg tea.Msg) (bool, string) {
 			}
 		}
 
-		if (!isDir && m.FileAllowed) || (isDir && m.DirAllowed) && m.Path != "" {
+		if (!isDir && m.FileAllowed) || (isDir && m.DirAllowed) {
 			return true, m.Path
 		}
 

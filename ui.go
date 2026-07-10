@@ -67,11 +67,13 @@ type MsgFileAttached struct {
 	Name        string
 	ContentType string
 	Data        []byte
+	Generation  uint64
 	Err         error
 }
 
-type MsgPastedImagesAttached struct {
+type MsgPastedFilesAttached struct {
 	Images     []PastedImage
+	Files      []PendingFile
 	Generation uint64
 	Err        error
 }
@@ -339,7 +341,7 @@ type Model struct {
 	kittyTransmitted     map[string]bool
 	navigationGeneration uint64
 	composeGeneration    uint64
-	pendingImagePastes   int
+	pendingFilePastes    int
 	selfChatID           string
 }
 
@@ -1408,6 +1410,12 @@ func (m Model) updateInternal(msg tea.Msg) (Model, tea.Cmd) {
 			if !msg.Silent {
 				m.app.SetStatus("Preview error: "+msg.Err.Error(), 3*time.Second)
 			}
+		} else if msg.QuickLook {
+			if err := quickPreviewFile(msg.DestPath); err != nil {
+				m.app.SetStatus("Quick preview failed: "+err.Error(), 5*time.Second)
+			} else {
+				m.app.SetStatus("Previewing: "+filepath.Base(msg.DestPath), 3*time.Second)
+			}
 		}
 		if previewCmd := m.queueInlineImagePreviews(4); previewCmd != nil {
 			cmds = append(cmds, previewCmd)
@@ -1548,12 +1556,11 @@ func (m Model) updateInternal(msg tea.Msg) (Model, tea.Cmd) {
 		}
 
 	case MsgFileAttached:
+		if msg.Generation != m.composeGeneration {
+			break
+		}
 		if msg.Err != nil {
 			m.app.SetStatus("File read error: "+msg.Err.Error(), 5*time.Second)
-			return m, nil
-		}
-		if len(msg.Data) > 50*1024*1024 {
-			m.app.SetStatus("Error: File exceeds the 50MB limit", 5*time.Second)
 			return m, nil
 		}
 		m.app.ComposedFiles = append(m.app.ComposedFiles, PendingFile{
@@ -1568,15 +1575,15 @@ func (m Model) updateInternal(msg tea.Msg) (Model, tea.Cmd) {
 		m.app.SkipTextareaUpdate = true
 		return m, nil
 
-	case MsgPastedImagesAttached:
+	case MsgPastedFilesAttached:
 		if msg.Generation != m.composeGeneration {
 			break
 		}
-		if m.pendingImagePastes > 0 {
-			m.pendingImagePastes--
+		if m.pendingFilePastes > 0 {
+			m.pendingFilePastes--
 		}
 		if msg.Err != nil {
-			m.app.SetStatus("Image paste failed: "+msg.Err.Error(), 5*time.Second)
+			m.app.SetStatus("File paste failed: "+msg.Err.Error(), 5*time.Second)
 			return m, nil
 		}
 		if !m.app.InputMode {
@@ -1587,10 +1594,15 @@ func (m Model) updateInternal(msg tea.Msg) (Model, tea.Cmd) {
 			placeholder := fmt.Sprintf("[Image %d]", len(m.app.ComposedImages))
 			m.textarea.InsertString(placeholder)
 		}
+		for _, file := range msg.Files {
+			m.app.ComposedFiles = append(m.app.ComposedFiles, file)
+			m.textarea.InsertString(fmt.Sprintf("[File: %s]", file.Name))
+		}
 		m.app.InputBuffer = m.textarea.Value()
-		status := fmt.Sprintf("Attached %d pasted images", len(msg.Images))
-		if len(msg.Images) == 1 {
-			status = "Attached pasted image"
+		count := len(msg.Images) + len(msg.Files)
+		status := fmt.Sprintf("Attached %d pasted files", count)
+		if count == 1 {
+			status = "Attached pasted file"
 		}
 		m.app.SetStatus(status, 3*time.Second)
 		m.app.SkipTextareaUpdate = true
@@ -2178,11 +2190,11 @@ func (m Model) handleNormalModeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 
 func (m Model) handleInputModeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	if msg.Paste {
-		if paths := localImagePathsFromPaste(string(msg.Runes)); len(paths) > 0 {
-			m.pendingImagePastes++
+		if paths := localFilePathsFromPaste(string(msg.Runes)); len(paths) > 0 {
+			m.pendingFilePastes++
 			m.app.SkipTextareaUpdate = true
-			m.app.SetStatus("Attaching pasted image...", 0)
-			return m, attachPastedImagesFromFilepathsCmd(paths, m.composeGeneration)
+			m.app.SetStatus("Attaching pasted file...", 0)
+			return m, attachPastedFilesFromFilepathsCmd(paths, m.composeGeneration, m.app.Features.FileUpload)
 		}
 	}
 
@@ -2261,7 +2273,7 @@ func (m Model) handleInputModeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
 		m.composeGeneration++
-		m.pendingImagePastes = 0
+		m.pendingFilePastes = 0
 		m.app.InputMode = false
 		m.app.InputBuffer = ""
 		m.app.EditingMessageID = nil
@@ -2281,6 +2293,7 @@ func (m Model) handleInputModeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 
 	case "ctrl+f":
 		if m.app.Features.FileUpload {
+			m.filepicker.ResetFilter()
 			m.app.FilePickerPopupMode = true
 			return m, m.filepicker.Init()
 		}
@@ -2301,17 +2314,17 @@ func (m Model) handleInputModeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 			return m, nil
 		}
 		if clipboardText, readErr := clipboard.ReadAll(); readErr == nil {
-			if paths := localImagePathsFromPaste(clipboardText); len(paths) > 0 {
-				m.pendingImagePastes++
+			if paths := localFilePathsFromPaste(clipboardText); len(paths) > 0 {
+				m.pendingFilePastes++
 				m.app.SkipTextareaUpdate = true
-				m.app.SetStatus("Attaching pasted image...", 0)
-				return m, attachPastedImagesFromFilepathsCmd(paths, m.composeGeneration)
+				m.app.SetStatus("Attaching pasted file...", 0)
+				return m, attachPastedFilesFromFilepathsCmd(paths, m.composeGeneration, m.app.Features.FileUpload)
 			}
 		}
 
 	case "enter":
-		if m.pendingImagePastes > 0 {
-			m.app.SetStatus("Image is still attaching...", 2*time.Second)
+		if m.pendingFilePastes > 0 {
+			m.app.SetStatus("File is still attaching...", 2*time.Second)
 			m.app.SkipTextareaUpdate = true
 			return m, nil
 		}
@@ -2502,6 +2515,12 @@ func (m Model) handleMessagePopupKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		m.app.MessagePopupMode = false
 		m.app.AttachmentCursorMode = false
 		return m, clearKittyImagesCmd()
+
+	case " ", "space":
+		if m.app.AttachmentCursorMode {
+			return m, m.quickPreviewSelectedAttachment()
+		}
+		return m, nil
 
 	case "tab":
 		var cmd tea.Cmd
@@ -3038,10 +3057,7 @@ func (m Model) persistentKittySequence(path string, x, y, width, height int, pla
 		}
 		m.kittyPreparedCache[key] = prepared
 	}
-	imageID := crc32.ChecksumIEEE([]byte(key))
-	if imageID == 0 {
-		imageID = 1
-	}
+	imageID := kittyImageID(key)
 	var sequence strings.Builder
 	if !m.kittyTransmitted[key] {
 		sequence.WriteString(kittyTransmitSequence(prepared, imageID))
@@ -3049,6 +3065,10 @@ func (m Model) persistentKittySequence(path string, x, y, width, height int, pla
 	}
 	sequence.WriteString(kittyPlaceSequence(prepared, imageID, placementID, x, y))
 	return sequence.String()
+}
+
+func kittyImageID(key string) uint32 {
+	return crc32.ChecksumIEEE([]byte(key))%2_000_000_000 + 1
 }
 
 // View renders the complete TUI.
@@ -3401,7 +3421,7 @@ func (m Model) renderRightPanel(w, h int) string {
 	m.textarea.SetHeight(inputH - 2)
 
 	// Build input box contents — add quote preview when replying.
-	hintText := "Type your message (Enter: send, Alt+Enter: new line, ESC: cancel, @: mention, Cmd/Ctrl+V: paste image"
+	hintText := "Type your message (Enter: send, Alt+Enter: new line, ESC: cancel, @: mention, Cmd/Ctrl+V: paste"
 	if m.app.Features.FileUpload {
 		hintText += ", Ctrl+f: attach file"
 	}
@@ -4261,7 +4281,7 @@ func (m Model) renderStatusBar(w int) string {
 func (m Model) statusHint() string {
 	switch {
 	case m.app.FilePickerPopupMode:
-		return "Files: j/k move, s sort, o order, Enter attach, Esc cancel"
+		return "Files: type to filter, arrows move, Enter open/attach, Esc cancel"
 	case m.app.HelpPopupMode:
 		return "Help: j/k scroll, h/?/q/Esc close"
 	case m.app.PresencePopupMode:
@@ -4271,7 +4291,7 @@ func (m Model) statusHint() string {
 	case m.app.MessagePopupMode:
 		return "Message: j/k next, J/K scroll, Tab attachments, q/Esc close"
 	case m.app.InputMode:
-		return "Compose: Enter send, Alt+Enter newline, Cmd/Ctrl+V image, Ctrl+f file, Ctrl+g editor, Esc cancel"
+		return "Compose: Enter send, Alt+Enter newline, Cmd/Ctrl+V paste, Ctrl+f file, Ctrl+g editor, Esc cancel"
 	case m.app.UserSearchPopupMode:
 		return "Find chat: type, j/k move, Enter open, Esc close"
 	case m.app.SearchPopupMode:
@@ -6400,7 +6420,7 @@ func (m Model) renderMessagePopup(w, h int) string {
 		attHeaderStyle := lipgloss.NewStyle().Foreground(colYellow).Bold(true)
 		attHeader := "Attachments:"
 		if m.app.AttachmentCursorMode {
-			attHeader += " [Tab:exit | ↑↓:select | Enter:download]"
+			attHeader += " [Tab:exit | ↑↓:select | Space:preview | Enter:download]"
 		} else if m.app.Features.FilePreview {
 			attHeader += " [Tab to select & download]"
 		}
@@ -6556,7 +6576,7 @@ func (m Model) renderMessagePopup(w, h int) string {
 			previewText = "\n⏳ Loading preview..."
 		} else {
 			borderColor = colGreen
-			previewText = "\nImage preview\nEnter: download/open"
+			previewText = ""
 		}
 
 		rightPanelStr := lipgloss.NewStyle().
@@ -6744,7 +6764,7 @@ func (m Model) getHelpContentLines() []string {
 			{"@", "Open autocomplete mention popup"},
 			{"j / k / Tab", "Navigate suggestions (when mention popup is open)"},
 			{"Enter", "Select suggestion (when open) / Send message"},
-			{"Ctrl+v", "Paste image from clipboard"},
+			{"Ctrl+v", "Paste image or copied filepath"},
 			{"Ctrl+f", "Browse and attach file (feature: file_upload_enabled)"},
 			{"Ctrl+g", "Compose/edit in external editor (e.g. vim)"},
 			{"ESC", "Cancel composing"},
@@ -6826,7 +6846,7 @@ func (m Model) handleHelpPopupKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 
 func (m Model) handleFilePickerKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	switch msg.String() {
-	case "esc", "q":
+	case "esc":
 		m.app.FilePickerPopupMode = false
 		return m, nil
 	}
@@ -6834,7 +6854,7 @@ func (m Model) handleFilePickerKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.filepicker, cmd = m.filepicker.Update(msg)
 
-	if msg.String() == "s" || msg.String() == "ctrl+s" || msg.String() == "o" || msg.String() == "ctrl+o" {
+	if msg.String() == "ctrl+s" || msg.String() == "ctrl+o" {
 		_ = SaveFilepickerSettings(m.filepicker.SortBy.String(), m.filepicker.SortOrder.String(), m.filepicker.CurrentDirectory)
 	}
 
@@ -6842,7 +6862,7 @@ func (m Model) handleFilePickerKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		_ = SaveFilepickerSettings(m.filepicker.SortBy.String(), m.filepicker.SortOrder.String(), m.filepicker.CurrentDirectory)
 		m.app.FilePickerPopupMode = false
 		m.app.SkipTextareaUpdate = true
-		return m, tea.Batch(cmd, attachFileFromFilepathCmd(path))
+		return m, tea.Batch(cmd, attachFileFromFilepathCmd(path, m.composeGeneration))
 	}
 
 	return m, cmd
@@ -7197,7 +7217,29 @@ func openFile(path string) error {
 	default:
 		cmd = exec.Command("xdg-open", path) // #nosec G204 -- no shell is involved.
 	}
-	return cmd.Start()
+	return startDetachedCommand(cmd)
+}
+
+func quickPreviewFile(path string) error {
+	info, err := os.Stat(path) // #nosec G703 -- path is an app-owned preview cache file.
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("preview path is not a regular file")
+	}
+	if runtime.GOOS != "darwin" {
+		return openFile(path)
+	}
+	return startDetachedCommand(exec.Command("/usr/bin/qlmanage", "-p", path)) // #nosec G204 -- fixed macOS Quick Look executable with an app-owned path.
+}
+
+func startDetachedCommand(cmd *exec.Cmd) error {
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	go func() { _ = cmd.Wait() }()
+	return nil
 }
 
 // checkAndTriggerPreviewDownload verifies the current selected attachment in cursor mode,
@@ -7241,6 +7283,48 @@ func (m Model) checkAndTriggerPreviewDownload() tea.Cmd {
 
 	// Download in background
 	return downloadPreviewCmd(m.clientID, fileURL, cachePath, false)
+}
+
+func (m Model) quickPreviewSelectedAttachment() tea.Cmd {
+	if !m.app.Features.FilePreview || !m.app.AttachmentCursorMode {
+		m.app.SetStatus("File preview disabled - enable file_preview_enabled in config.json", 5*time.Second)
+		return nil
+	}
+	if m.app.MessageSelectedIndex < 0 || m.app.MessageSelectedIndex >= len(m.app.Messages) {
+		return nil
+	}
+	msgObj := m.app.Messages[m.app.MessageSelectedIndex]
+	vAtts := viewableAttachments(msgObj)
+	if m.app.AttachmentSelectedIndex < 0 || m.app.AttachmentSelectedIndex >= len(vAtts) {
+		return nil
+	}
+	att := vAtts[m.app.AttachmentSelectedIndex]
+	fileURL := m.attachmentContentURL(msgObj, att)
+	if fileURL == "" || strings.HasPrefix(fileURL, "../") {
+		m.app.SetStatus("No preview URL for this attachment", 4*time.Second)
+		return nil
+	}
+	resolvedAtt := att
+	resolvedAtt.ContentURL = &fileURL
+	cachePath, err := getAttachmentCachePath(resolvedAtt)
+	if err != nil {
+		m.app.SetStatus("Could not prepare preview: "+err.Error(), 4*time.Second)
+		return nil
+	}
+	if info, err := os.Stat(cachePath); err == nil && info.Mode().IsRegular() {
+		return func() tea.Msg {
+			return MsgPreviewDownloaded{DestPath: cachePath, QuickLook: true}
+		}
+	}
+	m.app.SetStatus("Preparing preview: "+safeAttachmentName(att), 0)
+	return downloadQuickPreviewCmd(m.clientID, fileURL, cachePath)
+}
+
+func safeAttachmentName(att MessageAttachment) string {
+	if att.Name == nil {
+		return "attachment"
+	}
+	return safeAttachmentFilename(*att.Name)
 }
 
 func (m Model) attachmentContentURL(msg Message, att MessageAttachment) string {
@@ -7585,20 +7669,23 @@ func (m Model) loadChannelMessages(teamID string, channelID string) (Model, tea.
 }
 
 func (m Model) renderFilePickerPopup(w, h int) string {
-	dimStyle := lipgloss.NewStyle().Foreground(colDimGray)
 	title := lipgloss.NewStyle().Foreground(colCyan).Bold(true).Render("Select File to Attach")
 
 	currentDir := lipgloss.NewStyle().Foreground(colWhite).Bold(true).Render("Directory: " + m.filepicker.CurrentDirectory)
 	sortMode := lipgloss.NewStyle().Foreground(colYellow).Render(fmt.Sprintf("Sorted by: %s (%s)", m.filepicker.SortBy.String(), m.filepicker.SortOrder.String()))
+	visible, total := m.filepicker.MatchCount()
+	query := m.filepicker.Query
+	if query == "" {
+		query = lipgloss.NewStyle().Foreground(colDimGray).Render("Filter files...")
+	}
+	filterLine := lipgloss.NewStyle().Foreground(colCyan).Bold(true).Render("FILTER ") + query + lipgloss.NewStyle().Foreground(colCyan).Render("▌")
+	matchCount := lipgloss.NewStyle().Foreground(colDimGray).Render(fmt.Sprintf("%d / %d", visible, total))
+	filterLine = fitLine(filterLine, max(w-16, 10)) + "  " + matchCount
 
 	var lines []string
-	lines = append(lines, title, currentDir, sortMode, "")
+	lines = append(lines, title, currentDir, filterLine, sortMode, "")
 
-	// Render the filepicker component
 	lines = append(lines, m.filepicker.View())
-
-	footer := dimStyle.Italic(true).Render("j/k or ↑/↓: Navigate • s: Change Sort • o: Change Order • Enter: Attach • Esc / q: Cancel")
-	lines = append(lines, "", footer)
 
 	return lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).

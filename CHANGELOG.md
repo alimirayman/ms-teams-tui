@@ -2,6 +2,26 @@
 
 All notable changes to `ms-teams-tui` are documented here. This project uses semantic versioning.
 
+## 0.3.0 - 2026-07-10
+
+### Added
+
+- Type-first fuzzy filtering in the file picker, scoped to the current directory and ranked with `sahilm/fuzzy`.
+- Drag-and-drop and pasted-path attachment support for regular files, multiple newline-separated files, and mixed image/file selections.
+- Space-triggered cached quick preview for PDF, Office, image, and other registered document formats; macOS uses Quick Look.
+
+### Changed
+
+- Printable keys now write into the picker filter by default; arrow, paging, and Enter keys provide secondary list navigation.
+- Dotfiles and dot-directories are visible in the file picker by default.
+- Local attachment size is checked before reading the file into memory.
+
+### Fixed
+
+- Prevented dropped or pasted file paths from leaking into the outgoing message body as plain text.
+- Kept the valid authenticated access token in session memory when token-cache persistence or migration is unavailable, preventing `Send error: no cached token found` during the active session.
+- Matched Kitty image transmission, ID bounds, continuation chunks, and placement sequences to cmux's Ghostty renderer so cached popup images render instead of leaving an empty panel.
+
 ## 0.2.0 - 2026-07-10
 
 ### Added

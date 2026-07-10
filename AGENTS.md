@@ -28,7 +28,9 @@ Use semantic versioning:
 
 - Patch: bug fixes, security hardening without API breakage, internal refactors, build fixes, and small behavior corrections.
 - Minor: backward-compatible user-facing features, new configuration, new commands, or substantial UI behavior.
-- Major: incompatible config/storage/CLI behavior or intentionally breaking changes.
+- Major: incompatible config/storage/CLI behavior, intentionally breaking changes, or a significant product-level update.
+
+Classify the complete change set by its highest-impact change: fixes increment the patch version, features increment the minor version, and breaking or significant updates increment the major version. Do not use a patch increment for a release that adds a feature.
 
 Use the repository helpers:
 
@@ -140,9 +142,13 @@ Do not silence a security scanner globally. A `#nosec` annotation is allowed onl
 ### Files and Images
 
 - Clipboard access happens only after explicit paste actions.
-- File uploads happen only after explicit selection.
+- File uploads happen only after explicit picker selection, paste, or drag/drop input.
+- The file picker is type-first: printable keys update its fuzzy filter and arrow keys navigate results.
+- Dotfiles and dot-directories are intentionally visible in the picker.
 - Image preview cache paths are content-addressed under the app cache.
 - Inline image rendering uses Kitty Graphics Protocol sequences.
+- Keep Kitty transmission and placement compatible with cmux's Ghostty renderer: quiet 4096-byte chunks, image IDs in `1..2_000_000_000`, and `ESC 7/8` cursor save/restore around placements.
+- Attachment quick preview is explicit and user-triggered; macOS uses `/usr/bin/qlmanage -p` against an app-owned cache file.
 
 ### Persistence
 

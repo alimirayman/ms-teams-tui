@@ -36,6 +36,7 @@ The app launches local processes only for user-requested functions:
 
 - The configured editor for `Ctrl+g`
 - The configured browser/URL handler for `o`, calls, and downloaded files
+- `/usr/bin/qlmanage -p` on macOS after an explicit attachment quick-preview action
 - Clipboard helpers after an explicit paste action
 - `cmux notify` when running inside cmux with System/Both notifications enabled
 

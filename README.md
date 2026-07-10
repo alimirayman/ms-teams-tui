@@ -13,8 +13,8 @@ This project includes a Unicode-safe timeline; inline image support for Kitty-co
 | Chats | One-to-one, group, meeting, bot, and Saved Messages conversations |
 | Channels | Browse, read, post, reply, edit, delete, react, search, and mention users |
 | Rendering | Unicode/Bangla-safe wrapping, Markdown, HTML, code blocks, mentions, reactions, Adaptive Cards, links, images, and files |
-| Compose | Multiline messages, Markdown, replies, mentions, clipboard images, local files, and external editor |
-| Files | Timeline thumbnails, terminal previews, downloads, and uploads up to 50 MB |
+| Compose | Multiline messages, Markdown, replies, mentions, clipboard images, pasted or dropped files, and external editor |
+| Files | Type-first fuzzy picker, drag/drop, timeline thumbnails, terminal previews, downloads, and uploads up to 50 MB |
 | Navigation | Stable activity ordering, favourites, unread markers, history search, long-message collapse, and sleep mode |
 | Notifications | Console bell, native desktop notifications, or cmux-native notifications with previews |
 | Calls | One-key handoff to official Teams audio or video calls |
@@ -265,9 +265,9 @@ Press `?` in the app for the contextual help popup.
 | `Enter` | Send |
 | `Alt+Enter` | Insert a newline |
 | `@` | Open mention autocomplete |
-| `Ctrl+v` | Read and attach PNG/JPEG clipboard data |
-| `Cmd+v` | Attach a cmux/native-terminal pasted image path when supplied by the terminal |
-| `Ctrl+f` | Browse and attach a local file |
+| `Ctrl+v` | Attach clipboard image data or a copied filepath |
+| `Cmd+v` | Attach pasted or dropped local files supplied by the terminal |
+| `Ctrl+f` | Open the type-to-filter local file picker |
 | `Ctrl+g` | Compose in the external editor |
 | `Esc` | Cancel compose |
 
@@ -306,11 +306,11 @@ Editing your own message restores Markdown-like source rather than flattened ter
 
 ## Images and Attachments
 
-### Clipboard Images
+### Pasting and Dropping
 
-Enter compose mode with `i`, then paste a PNG or JPEG. The app inserts an `[Image N]` placeholder and attaches the image when the message is sent. Removing the placeholder removes that pending image.
+Enter compose mode with `i`, then paste or drag a local file into the terminal. Real file paths are intercepted instead of appearing in the outgoing message: images receive an `[Image N]` placeholder and other files receive `[File: filename]`. Multiple newline-separated paths and mixed image/file selections are supported.
 
-On cmux/macOS, normal `Cmd+v` works when cmux sends a temporary image filepath. `Ctrl+v` also reads image data directly from the system clipboard. Linux clipboard support uses `wl-paste` or `xclip` when available.
+On cmux/macOS, normal `Cmd+v` works when cmux or the terminal sends a filepath. `Ctrl+v` first checks for image data, then checks copied text for a real filepath. Linux clipboard image data uses `wl-paste` or `xclip` when available. Non-image files require `file_upload_enabled` and its `Files.ReadWrite` permission.
 
 ### Timeline Images
 
@@ -320,9 +320,9 @@ If only a filename appears, verify the feature flags, `Files.Read` permission, f
 
 ### Files
 
-Press `Ctrl+f` while composing to attach a file up to 50 MB. Chat files upload to the OneDrive `Microsoft Teams Chat Files` folder; channel files upload to the channel SharePoint folder. Files above 4 MB use a resumable upload session automatically.
+Press `Ctrl+f` while composing to open the file picker. Start typing immediately to fuzzy-filter filenames in the current directory; dotfiles and dot-directories are included. Use arrow keys for secondary navigation and Enter to open a directory or attach the selected file. Files are limited to 50 MB. Chat files upload to the OneDrive `Microsoft Teams Chat Files` folder; channel files upload to the channel SharePoint folder. Files above 4 MB use a resumable upload session automatically.
 
-To download, select a message with `m`, open it with `v`, press `Tab` to focus attachments, and press `Enter`. Downloads are saved to the platform Downloads directory.
+To inspect an attachment, select a message with `m`, open it with `v`, and press `Tab` to focus attachments. Press `Space` for a cached quick preview or `Enter` to save and open it from the platform Downloads directory. On macOS, quick preview uses Quick Look and supports PDFs, Office documents, images, and other registered formats.
 
 ## Saved Messages
 
@@ -357,6 +357,10 @@ Set `notification_mode` to `System` or `Both`, leave `teams` running, and verify
 ### Images Show Only Filenames
 
 Enable both preview flags, grant `Files.Read`, re-authenticate, and use a Kitty-compatible terminal. The attachment remains downloadable even when the terminal cannot draw it inline.
+
+### Image Preview Panel Is Empty
+
+Update to `0.3.0` or newer. Earlier persistent image placement sequences did not match cmux's Ghostty renderer. Cached image downloads may be valid even when the old placement command leaves the panel blank.
 
 ### Calls Do Not Open on macOS
 

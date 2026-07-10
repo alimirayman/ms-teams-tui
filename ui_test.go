@@ -231,6 +231,69 @@ func TestPersistentKittyImageTransmitsOnceThenPlaces(t *testing.T) {
 	}
 }
 
+func TestKittyPlacementMatchesCmuxGhosttySequence(t *testing.T) {
+	prepared := kittyPreparedImage{Cols: 20, Rows: 6, PadX: 2, PadY: 1}
+	got := kittyPlaceSequence(prepared, 3, 1, 4, 6)
+	want := "\x1b7\x1b[8;7H\x1b_Ga=p,i=3,p=1,c=20,r=6,q=2;\x1b\\\x1b8"
+	if got != want {
+		t.Fatalf("placement sequence = %q, want %q", got, want)
+	}
+}
+
+func TestKittyTransmissionUsesQuietContinuationChunks(t *testing.T) {
+	prepared := kittyPreparedImage{Encoded: strings.Repeat("a", 4096) + "bbbb", Cols: 1, Rows: 1}
+	got := kittyTransmitSequence(prepared, 8)
+	if !strings.Contains(got, "\x1b_Ga=t,f=100,i=8,q=2,m=1;") {
+		t.Fatalf("missing first transmission chunk: %q", got[:min(len(got), 120)])
+	}
+	if !strings.Contains(got, "\x1b_Gq=2,m=0;bbbb\x1b\\") {
+		t.Fatalf("missing quiet continuation chunk")
+	}
+}
+
+func TestKittyImageIDUsesCmuxCompatibleRange(t *testing.T) {
+	for _, key := range []string{"small", strings.Repeat("high-bit", 100), "বাংলা-image"} {
+		id := kittyImageID(key)
+		if id < 1 || id > 2_000_000_000 {
+			t.Fatalf("image id %d is outside cmux-compatible range", id)
+		}
+	}
+}
+
+func TestQuickPreviewSelectedAttachmentUsesPrivateCache(t *testing.T) {
+	withTempConfigHome(t)
+	name := "quarterly-report.pdf"
+	contentType := "application/pdf"
+	contentURL := "https://graph.microsoft.com/v1.0/drives/drive/items/item/content"
+	chatName := "Finance"
+	att := MessageAttachment{Name: &name, ContentType: &contentType, ContentURL: &contentURL}
+	app := NewApp()
+	app.Features.FilePreview = true
+	app.AttachmentCursorMode = true
+	app.AttachmentSelectedIndex = 0
+	app.MessageSelectedIndex = 0
+	app.SelectedIndex = 0
+	app.Chats = []Chat{{ID: "chat-id", CachedDisplayName: &chatName}}
+	app.Messages = []Message{{ID: "message-id", Attachments: []MessageAttachment{att}}}
+	model := NewModel(app, "client-id", "user-id")
+
+	cachePath, err := getAttachmentCachePath(att)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writePrivateFile(cachePath, []byte("%PDF-1.7\n")); err != nil {
+		t.Fatal(err)
+	}
+	cmd := model.quickPreviewSelectedAttachment()
+	if cmd == nil {
+		t.Fatal("expected cached quick preview command")
+	}
+	msg, ok := cmd().(MsgPreviewDownloaded)
+	if !ok || !msg.QuickLook || msg.DestPath != cachePath || msg.Err != nil {
+		t.Fatalf("quick preview message = %#v", msg)
+	}
+}
+
 func BenchmarkRenderMessagesLongPosts(b *testing.B) {
 	chatName := "Engineering"
 	longBody := strings.Repeat("SELECT id, slug FROM doctors WHERE slug IS NOT NULL;\n", 80)

@@ -73,9 +73,21 @@ func getAttachmentCachePath(att MessageAttachment) (string, error) {
 
 // MsgPreviewDownloaded is sent when a background preview image download completes.
 type MsgPreviewDownloaded struct {
-	DestPath string
-	Err      error
-	Silent   bool
+	DestPath  string
+	Err       error
+	Silent    bool
+	QuickLook bool
+}
+
+func downloadQuickPreviewCmd(clientID, fileURL, destPath string) tea.Cmd {
+	return func() tea.Msg {
+		token, err := GetValidTokenSilent(clientID)
+		if err != nil {
+			return MsgPreviewDownloaded{DestPath: destPath, Err: err, QuickLook: true}
+		}
+		err = DownloadFile(token, fileURL, destPath)
+		return MsgPreviewDownloaded{DestPath: destPath, Err: err, QuickLook: true}
+	}
 }
 
 type kittyPreparedImage struct {
@@ -195,7 +207,7 @@ func kittyTransmitSequence(image kittyPreparedImage, imageID uint32) string {
 		if i == 0 {
 			sb.WriteString(fmt.Sprintf("\x1b_Ga=t,f=100,i=%d,q=2,m=%d;%s\x1b\\", imageID, mVal, chunk))
 		} else {
-			sb.WriteString(fmt.Sprintf("\x1b_Gm=%d,q=2;%s\x1b\\", mVal, chunk))
+			sb.WriteString(fmt.Sprintf("\x1b_Gq=2,m=%d;%s\x1b\\", mVal, chunk))
 		}
 	}
 	return sb.String()
@@ -208,7 +220,7 @@ func kittyPlaceSequence(image kittyPreparedImage, imageID, placementID uint32, x
 	targetX := x + image.PadX
 	targetY := y + image.PadY
 	return fmt.Sprintf(
-		"\x1b[s\x1b[%d;%dH\x1b_Ga=p,i=%d,p=%d,c=%d,r=%d,C=1,q=2\x1b\\\x1b[u",
+		"\x1b7\x1b[%d;%dH\x1b_Ga=p,i=%d,p=%d,c=%d,r=%d,q=2;\x1b\\\x1b8",
 		targetY+1,
 		targetX+1,
 		imageID,
@@ -226,7 +238,7 @@ func kittyImageSequence(filePath string, x, y, cols, rows int) string {
 	}
 
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("\x1b[s\x1b[%d;%dH", y+prepared.PadY+1, x+prepared.PadX+1))
+	sb.WriteString(fmt.Sprintf("\x1b7\x1b[%d;%dH", y+prepared.PadY+1, x+prepared.PadX+1))
 	const chunkSize = 4096
 	for i := 0; i < len(prepared.Encoded); i += chunkSize {
 		end := min(i+chunkSize, len(prepared.Encoded))
@@ -235,13 +247,13 @@ func kittyImageSequence(filePath string, x, y, cols, rows int) string {
 			more = 0
 		}
 		if i == 0 {
-			sb.WriteString(fmt.Sprintf("\x1b_Ga=T,f=100,m=%d,c=%d,r=%d;%s\x1b\\", more, prepared.Cols, prepared.Rows, prepared.Encoded[i:end]))
+			sb.WriteString(fmt.Sprintf("\x1b_Ga=T,f=100,q=2,m=%d,c=%d,r=%d;%s\x1b\\", more, prepared.Cols, prepared.Rows, prepared.Encoded[i:end]))
 		} else {
-			sb.WriteString(fmt.Sprintf("\x1b_Gm=%d;%s\x1b\\", more, prepared.Encoded[i:end]))
+			sb.WriteString(fmt.Sprintf("\x1b_Gq=2,m=%d;%s\x1b\\", more, prepared.Encoded[i:end]))
 		}
 	}
 
-	sb.WriteString("\x1b[u")
+	sb.WriteString("\x1b8")
 	return sb.String()
 }
 
