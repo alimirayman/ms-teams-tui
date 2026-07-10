@@ -2,6 +2,21 @@
 
 All notable changes to `ms-teams-tui` are documented here. This project uses semantic versioning.
 
+## 0.4.0 - 2026-07-10
+
+### Added
+
+- Locally persisted channel favourites. Press `f` on a channel to toggle it, keep the selected channel focused, and sort favourites to the top of the channel list.
+- Direct timeline rendering for Teams hero, thumbnail, Microsoft 365 connector, receipt, sign-in, list, announcement, and code-snippet cards in addition to Adaptive Cards.
+
+### Changed
+
+- Card messages with embedded JSON stay expanded automatically and expose their supported action URLs through the existing message URL commands.
+
+### Fixed
+
+- Prevented supported non-Adaptive channel cards from being deleted by attachment filtering and appearing as blank timestamp rows.
+
 ## 0.3.0 - 2026-07-10
 
 ### Added

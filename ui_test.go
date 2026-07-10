@@ -154,6 +154,67 @@ func TestChatNavigationUsesCacheBeforeSettledLoad(t *testing.T) {
 	}
 }
 
+func TestFavouriteChannelsSortFirstAndRenderStar(t *testing.T) {
+	app := NewApp()
+	app.Features.TeamsChannels = true
+	app.TeamsDataLoading = false
+	app.TeamsData = []TeamWithChannels{
+		{
+			Team: Team{ID: "team-a", DisplayName: "Engineering"},
+			Channels: []Channel{
+				{ID: "general", DisplayName: "General"},
+				{ID: "releases", DisplayName: "Releases"},
+			},
+		},
+		{
+			Team:     Team{ID: "team-b", DisplayName: "Operations"},
+			Channels: []Channel{{ID: "alerts", DisplayName: "Alerts"}},
+		},
+	}
+	model := NewModel(app, "client-id", "user-id")
+	model.unhiddenChannels = map[string]bool{"general": true, "releases": true, "alerts": true}
+	model.channelFavourites = map[string]bool{"alerts": true}
+
+	channels := model.allChannels()
+	if len(channels) != 3 || channels[0].channelID != "alerts" {
+		t.Fatalf("channel order = %#v, want alerts first", channels)
+	}
+	view := stripANSI(model.renderChatList(60, 16))
+	if !strings.Contains(view, "★ # Operations » Alerts") {
+		t.Fatalf("favourite star missing from channel list:\n%s", view)
+	}
+}
+
+func TestChannelFavouriteTogglePersistsAndPreservesSelection(t *testing.T) {
+	withTempConfigHome(t)
+	app := NewApp()
+	app.Features.TeamsChannels = true
+	app.TeamsData = []TeamWithChannels{{
+		Team: Team{ID: "team", DisplayName: "Engineering"},
+		Channels: []Channel{
+			{ID: "general", DisplayName: "General"},
+			{ID: "releases", DisplayName: "Releases"},
+		},
+	}}
+	model := NewModel(app, "client-id", "user-id")
+	model.unhiddenChannels = map[string]bool{"general": true, "releases": true}
+	model.channelSelectedIndex = 1
+	selectedID := model.allChannels()[model.channelSelectedIndex].channelID
+	app.SelectedChannelTeamID = "team"
+	app.SelectedChannelID = selectedID
+
+	next, _ := model.handleNormalModeKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'f'}})
+	if !next.channelFavourites[selectedID] {
+		t.Fatalf("channel %q was not favourited", selectedID)
+	}
+	if got := next.allChannels()[next.channelSelectedIndex].channelID; got != selectedID {
+		t.Fatalf("selected channel changed to %q, want %q", got, selectedID)
+	}
+	if persisted := LoadChannelFavourites(); !persisted[selectedID] {
+		t.Fatalf("persisted channel favourites = %#v", persisted)
+	}
+}
+
 func TestPanelWidthsStayValidInNarrowTerminals(t *testing.T) {
 	for total := 3; total <= 80; total++ {
 		chatWidth := chatPanelWidth(total)

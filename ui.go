@@ -311,6 +311,10 @@ type Model struct {
 	// Loaded from and persisted to favourites.json in the app config dir.
 	favourites map[string]bool
 
+	// channelFavourites holds channel IDs starred locally by the user.
+	// Loaded from and persisted to channel_favourites.json in the app config dir.
+	channelFavourites map[string]bool
+
 	// unhiddenChannels holds channel IDs that are unhidden by the user.
 	// Loaded from and persisted to unhidden_channels.json in the app config dir.
 	unhiddenChannels map[string]bool
@@ -405,6 +409,7 @@ func NewModel(app *App, clientID, userID string) Model {
 		notifiedReactions:    make(map[string]map[string]bool),
 		pendingEdits:         make(map[string]string),
 		favourites:           make(map[string]bool),
+		channelFavourites:    make(map[string]bool),
 		unhiddenChannels:     make(map[string]bool),
 		originalTeamIndex:    make(map[string]int),
 		originalChannelIndex: make(map[string]int),
@@ -1770,7 +1775,7 @@ func (m Model) toggleMessageExpanded(index int) Model {
 	}
 	messageID := m.app.Messages[index].ID
 	expanded, wasSet := m.app.ExpandedMessages[messageID]
-	if !wasSet && messageHasAdaptiveCard(m.app.Messages[index]) {
+	if !wasSet && messageHasCard(m.app.Messages[index]) {
 		expanded = true
 	}
 	m.app.ExpandedMessages[messageID] = !expanded
@@ -2058,8 +2063,31 @@ func (m Model) handleNormalModeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		}
 
 	case "f":
-		// Toggle favourite on the selected chat — no-op in channel mode.
 		if m.channelSelectedIndex >= 0 {
+			channels := m.allChannels()
+			if m.channelSelectedIndex >= len(channels) {
+				break
+			}
+			entry := channels[m.channelSelectedIndex]
+			if m.channelFavourites == nil {
+				m.channelFavourites = make(map[string]bool)
+			}
+			if m.channelFavourites[entry.channelID] {
+				delete(m.channelFavourites, entry.channelID)
+				m.app.SetStatus("★ Removed channel favourite: "+entry.channelName, 3*time.Second)
+			} else {
+				m.channelFavourites[entry.channelID] = true
+				m.app.SetStatus("★ Added channel favourite: "+entry.channelName, 3*time.Second)
+			}
+			if err := SaveChannelFavourites(m.channelFavourites); err != nil {
+				m.app.SetStatus("Could not save channel favourites: "+err.Error(), 5*time.Second)
+			}
+			for index, channel := range m.allChannels() {
+				if channel.channelID == entry.channelID {
+					m.channelSelectedIndex = index
+					break
+				}
+			}
 			break
 		}
 		if chat := m.app.GetSelectedChat(); chat != nil {
@@ -3539,8 +3567,8 @@ type channelEntry struct {
 }
 
 // allChannels returns the flat ordered list of all channels across all teams,
-// sorted globally: unhidden channels first (sorted by last message activity),
-// followed by hidden channels (sorted in their original default order).
+// sorted globally: favourites first, then unhidden channels by activity,
+// followed by hidden channels in their original default order.
 func (m Model) allChannels() []channelEntry {
 	var list []channelEntry
 	for _, twc := range m.app.TeamsData {
@@ -3557,6 +3585,11 @@ func (m Model) allChannels() []channelEntry {
 	sort.Slice(list, func(i, j int) bool {
 		idA := list[i].channelID
 		idB := list[j].channelID
+		isAFavourite := m.channelFavourites[idA]
+		isBFavourite := m.channelFavourites[idB]
+		if isAFavourite != isBFavourite {
+			return isAFavourite
+		}
 		isAHidden := !m.unhiddenChannels[idA]
 		isBHidden := !m.unhiddenChannels[idB]
 
@@ -3618,8 +3651,9 @@ func (m Model) activeConversationID() string {
 func (m Model) renderChatList(w, h int) string {
 	titleText := fmt.Sprintf(" INBOX  %d", len(m.app.Chats))
 	title := lipgloss.NewStyle().Foreground(colWhite).Bold(true).Render(titleText)
+	chans := m.allChannels()
 
-	if len(m.app.Chats) == 0 {
+	if len(m.app.Chats) == 0 && (!m.app.Features.TeamsChannels || (!m.app.TeamsDataLoading && len(chans) == 0)) {
 		return lipgloss.JoinVertical(lipgloss.Left, title, m.app.Status)
 	}
 
@@ -3630,7 +3664,6 @@ func (m Model) renderChatList(w, h int) string {
 	}
 
 	// ── Calculate how many lines the Teams section will consume ──────────
-	chans := m.allChannels()
 	teamsLines := 0 // lines consumed by the Teams section (divider + entries)
 	if m.app.Features.TeamsChannels {
 		if m.app.TeamsDataLoading {
@@ -3809,11 +3842,15 @@ func (m Model) renderChatList(w, h int) string {
 			for ci := cStart; ci < cEnd; ci++ {
 				entry := chans[ci]
 				isHidden := !m.unhiddenChannels[entry.channelID]
+				isFavourite := m.channelFavourites[entry.channelID]
 				unread := m.lastMsgID[entry.channelID] != "" && m.lastReadMsgID[entry.channelID] != m.lastMsgID[entry.channelID]
 
 				prefix := ""
 				if unread {
 					prefix = "● "
+				}
+				if isFavourite {
+					prefix += "★ "
 				}
 
 				var label string
@@ -3908,7 +3945,7 @@ func (m Model) cachedMessageLines(msg *Message, width int) []string {
 	}
 	reactions := renderReactions(msg.Reactions)
 	attachments := renderAttachmentSummary(*msg)
-	richContent := adaptiveCardSignature(msg.Attachments)
+	richContent := cardSignature(msg.Attachments)
 	if cached, ok := m.messageRenderCache[msg.ID]; ok &&
 		cached.Width == width &&
 		cached.RawBody == rawBody &&
@@ -4054,7 +4091,7 @@ func (m Model) renderMessages(w, h int) string {
 
 		msgLines := m.cachedMessageLines(&msgs[i], maxW-len(replyIndent))
 		expanded, wasSet := m.app.ExpandedMessages[msg.ID]
-		if !wasSet && messageHasAdaptiveCard(msg) {
+		if !wasSet && messageHasCard(msg) {
 			expanded = true
 		}
 		msgLines = collapsedMessageLines(msgLines, expanded)
@@ -4306,7 +4343,7 @@ func (m Model) statusHint() string {
 	case m.app.SelectedIndex < 0 && m.channelSelectedIndex < 0:
 		return "Sleep: j/k select, h/? help, q quit"
 	case m.channelSelectedIndex >= 0:
-		return "LIST  j/k move  Enter open  g/G ends  Tab chats  m actions  z expand  i compose  h mute"
+		return "LIST  j/k move  Enter open  g/G ends  Tab chats  f favourite  m actions  i compose  h mute"
 	default:
 		return "LIST  j/k move  Enter open  Tab channels  m actions  i compose  s saved  C/V call"
 	}
@@ -6259,7 +6296,7 @@ func viewableAttachments(msg Message) []MessageAttachment {
 	var out []MessageAttachment
 	for _, att := range msg.Attachments {
 		if att.ContentType != nil {
-			if strings.EqualFold(*att.ContentType, "messageReference") || isAdaptiveCardAttachment(att) {
+			if strings.EqualFold(*att.ContentType, "messageReference") || isCardAttachment(att) {
 				continue
 			}
 		}
@@ -6714,7 +6751,7 @@ func (m Model) getHelpContentLines() []string {
 			{"s", "Open Saved messages (chat with yourself)"},
 			{"C / V", "Start a Teams audio / video call from selected chat"},
 			{"/", "Search message history"},
-			{"f", "Toggle favourite (chats only)"},
+			{"f", "Toggle favourite for the selected chat or channel"},
 			{"h / ?", "Show this help (h toggles hide/unhide when a channel is focused)"},
 			{"p", "Presence status of chat participants (chats only, feature: presence_enabled)"},
 			{"n", "Cycle notification mode"},

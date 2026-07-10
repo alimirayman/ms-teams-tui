@@ -168,7 +168,7 @@ Enable in config:
 { "teams_channels_enabled": true }
 ```
 
-Effect: Teams channels appear in the **main chat list sidebar** below your chats, under a `── Teams ──` divider. Navigate into them with `j`/`k` just like chats; their messages load in the right panel.
+Effect: Teams channels appear in the **main chat list sidebar** below your chats, under a `── Teams ──` divider. Navigate into them with `j`/`k` just like chats; their messages load in the right panel. Press `f` to favourite a channel locally and keep it at the top of the channel list. This does not require another Graph permission.
 
 | Permission                 | Type      | Admin Consent   | Purpose                                      |
 | -------------------------- | --------- | --------------- | -------------------------------------------- |

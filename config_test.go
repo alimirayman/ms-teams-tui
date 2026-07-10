@@ -15,6 +15,31 @@ func withTempConfigHome(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
 }
 
+func TestChannelFavouritesRoundTrip(t *testing.T) {
+	withTempConfigHome(t)
+
+	want := map[string]bool{"channel-b": true, "channel-a": true}
+	if err := SaveChannelFavourites(want); err != nil {
+		t.Fatal(err)
+	}
+	got := LoadChannelFavourites()
+	if len(got) != len(want) || !got["channel-a"] || !got["channel-b"] {
+		t.Fatalf("channel favourites = %#v, want %#v", got, want)
+	}
+
+	dir, err := GetAppDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "channel_favourites.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "[\n  \"channel-a\",\n  \"channel-b\"\n]" {
+		t.Fatalf("channel favourites file is not deterministic: %s", data)
+	}
+}
+
 func TestLegacyDataDirectoriesAreMigrated(t *testing.T) {
 	withTempConfigHome(t)
 

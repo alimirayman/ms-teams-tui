@@ -104,15 +104,71 @@ func TestAdaptiveCardURLs(t *testing.T) {
 	}
 }
 
-func TestNonAdaptiveRichCardIsStillFiltered(t *testing.T) {
+func TestHeroCardIsRetainedAndRendered(t *testing.T) {
 	contentType := "application/vnd.microsoft.card.hero"
+	body := `<attachment id="hero-id"></attachment>`
 	message := Message{Attachments: []MessageAttachment{{
 		ID:          "hero-id",
 		ContentType: &contentType,
-		Content:     testStringPtr(`{"title":"preview"}`),
-	}}}
+		Content: testStringPtr(`{
+          "title":"Deployment complete",
+          "subtitle":"Production",
+          "text":"Version **0.4.0** is live",
+          "buttons":[{"type":"openUrl","title":"View deployment","value":"https://example.com/deployments/42"}]
+        }`),
+	}}, Body: &MessageBody{Content: &body}}
 	FilterMessageAttachments(&message)
-	if len(message.Attachments) != 0 {
-		t.Fatalf("hero preview card should remain filtered: %#v", message.Attachments)
+	if len(message.Attachments) != 1 {
+		t.Fatalf("hero card was filtered out: %#v", message.Attachments)
+	}
+	plain := stripANSI(message.GetPlainText())
+	for _, expected := range []string{"Deployment complete", "Production", "Version 0.4.0 is live", "View deployment"} {
+		if !strings.Contains(plain, expected) {
+			t.Fatalf("hero card output missing %q:\n%s", expected, plain)
+		}
+	}
+	if viewable := viewableAttachments(message); len(viewable) != 0 {
+		t.Fatalf("hero card exposed as downloadable attachment: %#v", viewable)
+	}
+}
+
+func TestConnectorCardSectionsFactsAndActionsRender(t *testing.T) {
+	contentType := "application/vnd.microsoft.teams.card.o365connector"
+	body := `<attachment id="connector-id"></attachment>`
+	content := `{
+      "@type":"MessageCard",
+      "summary":"Build notification",
+      "title":"CI pipeline passed",
+      "sections":[{
+        "activityTitle":"ms-teams-tui",
+        "activitySubtitle":"main branch",
+        "facts":[{"name":"Commit","value":"090ce0c"},{"name":"Duration","value":"2m 14s"}]
+      }],
+      "potentialAction":[{
+        "@type":"OpenUri",
+        "name":"Open build",
+        "targets":[{"os":"default","uri":"https://example.com/builds/42"}]
+      }]
+    }`
+	message := Message{
+		ID:   "connector-message",
+		Body: &MessageBody{Content: &body},
+		Attachments: []MessageAttachment{{
+			ID:          "connector-id",
+			ContentType: &contentType,
+			Content:     &content,
+		}},
+	}
+
+	FilterMessageAttachments(&message)
+	plain := stripANSI(message.GetPlainText())
+	for _, expected := range []string{"CI pipeline passed", "ms-teams-tui", "Commit", "090ce0c", "Open build"} {
+		if !strings.Contains(plain, expected) {
+			t.Fatalf("connector card output missing %q:\n%s", expected, plain)
+		}
+	}
+	urls := messageURLs(message)
+	if len(urls) != 1 || urls[0] != "https://example.com/builds/42" {
+		t.Fatalf("connector card URLs = %#v", urls)
 	}
 }

@@ -111,10 +111,10 @@ func (msg *Message) GetPlainText() string {
 	}
 	text := HTMLToText(bodyContent, msg.Attachments, msg.Mentions)
 	for _, att := range msg.Attachments {
-		if !isAdaptiveCardAttachment(att) || strings.Contains(bodyContent, att.ID) {
+		if !isCardAttachment(att) || strings.Contains(bodyContent, att.ID) {
 			continue
 		}
-		card := renderAdaptiveCardAttachment(att)
+		card := renderCardAttachment(att)
 		if card == "" {
 			continue
 		}
@@ -303,9 +303,9 @@ func FilterMessageAttachments(msg *Message) {
 	for _, att := range msg.Attachments {
 		if att.ContentType != nil {
 			ct := strings.ToLower(*att.ContentType)
-			// Keep Adaptive Cards for terminal rendering; discard other rich
-			// cards and URL previews that have no useful file operation.
-			if strings.Contains(ct, "card") && !isAdaptiveCardAttachment(att) {
+			// Keep Teams cards with embedded JSON for terminal rendering; discard
+			// URL-preview shells and unsupported cards without useful content.
+			if strings.Contains(ct, "card") && !isCardAttachment(att) {
 				continue
 			}
 			// Ignore reference attachments that do not point to SharePoint/OneDrive
@@ -2062,8 +2062,8 @@ func HTMLToText(htmlContent string, attachments []MessageAttachment, mentions []
 					}
 				}
 				if att, ok := attByID[attID]; ok {
-					if isAdaptiveCardAttachment(att) {
-						if card := renderAdaptiveCardAttachment(att); card != "" {
+					if isCardAttachment(att) {
+						if card := renderCardAttachment(att); card != "" {
 							if sb.Len() > 0 && lastChar != '\n' {
 								sb.WriteRune('\n')
 							}

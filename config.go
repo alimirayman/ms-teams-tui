@@ -57,6 +57,45 @@ func SaveFavourites(favs map[string]bool) error {
 	return writePrivateFile(filepath.Join(dir, "favourites.json"), data)
 }
 
+// LoadChannelFavourites reads the locally favourited channel IDs.
+func LoadChannelFavourites() map[string]bool {
+	dir, err := GetAppDir()
+	if err != nil {
+		return make(map[string]bool)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "channel_favourites.json")) // #nosec G304 -- dir is the private OS config directory.
+	if err != nil {
+		return make(map[string]bool)
+	}
+	var ids []string
+	if err := json.Unmarshal(data, &ids); err != nil {
+		return make(map[string]bool)
+	}
+	favourites := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		favourites[id] = true
+	}
+	return favourites
+}
+
+// SaveChannelFavourites writes the locally favourited channel IDs.
+func SaveChannelFavourites(favourites map[string]bool) error {
+	dir, err := GetAppDir()
+	if err != nil {
+		return err
+	}
+	ids := make([]string, 0, len(favourites))
+	for id := range favourites {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	data, err := json.MarshalIndent(ids, "", "  ")
+	if err != nil {
+		return fmt.Errorf("could not marshal channel favourites: %w", err)
+	}
+	return writePrivateFile(filepath.Join(dir, "channel_favourites.json"), data)
+}
+
 // LoadUnhiddenChannels reads the list of unhidden channel IDs from unhidden_channels.json.
 // Returns an empty map if the file does not exist or cannot be parsed.
 func LoadUnhiddenChannels() map[string]bool {

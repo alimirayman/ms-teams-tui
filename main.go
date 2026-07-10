@@ -830,6 +830,7 @@ func main() {
 
 	// Load persisted favourites and apply them so favourites appear at the top on launch.
 	model.favourites = LoadFavourites()
+	model.channelFavourites = LoadChannelFavourites()
 	model.unhiddenChannels = LoadUnhiddenChannels()
 
 	// Fetch any favourited chats that weren't returned by the regular API call

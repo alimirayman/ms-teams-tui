@@ -4,15 +4,15 @@ A keyboard-first Microsoft Teams client for the terminal, built for fast chat an
 
 The installed command is intentionally short: `teams`.
 
-This project includes a Unicode-safe timeline; inline image support for Kitty-compatible terminals and cmux; Adaptive Card rendering; attachment upload/download; cmux notifications; Saved Messages discovery; and Teams call handoff.
+This project includes a Unicode-safe timeline; inline image support for Kitty-compatible terminals and cmux; Teams card rendering; attachment upload/download; cmux notifications; Saved Messages discovery; and Teams call handoff.
 
 ## Capabilities
 
 | Area | Support |
 | --- | --- |
 | Chats | One-to-one, group, meeting, bot, and Saved Messages conversations |
-| Channels | Browse, read, post, reply, edit, delete, react, search, and mention users |
-| Rendering | Unicode/Bangla-safe wrapping, Markdown, HTML, code blocks, mentions, reactions, Adaptive Cards, links, images, and files |
+| Channels | Browse, favourite, read, post, reply, edit, delete, react, search, and mention users |
+| Rendering | Unicode/Bangla-safe wrapping, Markdown, HTML, code blocks, mentions, reactions, Teams cards, links, images, and files |
 | Compose | Multiline messages, Markdown, replies, mentions, clipboard images, pasted or dropped files, and external editor |
 | Files | Type-first fuzzy picker, drag/drop, timeline thumbnails, terminal previews, downloads, and uploads up to 50 MB |
 | Navigation | Stable activity ordering, favourites, unread markers, history search, long-message collapse, and sleep mode |
@@ -232,7 +232,7 @@ Press `?` in the app for the contextual help popup.
 | `s` | Open Saved Messages, the chat with yourself |
 | `C` / `V` | Open a Teams audio or video call for the selected chat |
 | `v` | Preview the newest image in loaded messages |
-| `f` | Toggle favourite for a chat |
+| `f` | Toggle favourite for a chat or channel |
 | `p` | Show participant presence for a chat |
 | `h` / `?` | Help; `h` hides/unhides a selected channel |
 | `n` | Cycle notification mode |
@@ -275,11 +275,13 @@ Press `?` in the app for the contextual help popup.
 
 ### Long Messages
 
-Messages longer than eight rendered lines collapse automatically to keep navigation fast. Press `z` to expand or collapse them. Adaptive Cards start expanded so their fields are visible immediately.
+Messages longer than eight rendered lines collapse automatically to keep navigation fast. Press `z` to expand or collapse them. Teams cards start expanded so their fields are visible immediately.
 
-### Adaptive Cards
+### Teams Cards
 
-Workflow and bot messages using `application/vnd.microsoft.card.adaptive` render directly in the timeline instead of appearing as blank timestamp rows. Supported presentation elements include:
+Workflow, bot, connector, and channel cards render directly in the timeline instead of appearing as blank timestamp rows. Supported card families include Adaptive, hero, thumbnail, Microsoft 365 connector, receipt, sign-in, list, announcement, and code-snippet cards.
+
+Adaptive Card presentation includes:
 
 - `TextBlock` and `RichTextBlock`
 - `FactSet` with aligned labels and values
@@ -376,6 +378,7 @@ Use an up-to-date terminal and a font with Bengali glyph coverage. The TUI uses 
 | --- | --- |
 | `config.json` in the config directory | Account, features, limits, notifications, and commands |
 | `favourites.json` in the config directory | Pinned chat IDs |
+| `channel_favourites.json` in the config directory | Pinned channel IDs |
 | `unhidden_channels.json` in the config directory | Channel visibility state |
 | `filepicker_settings.json` in the config directory | Last file browser directory and sorting |
 | `token.json` in the cache directory | OAuth access and refresh tokens; mode `0600` |

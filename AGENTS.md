@@ -129,7 +129,7 @@ Do not silence a security scanner globally. A `#nosec` annotation is allowed onl
 - Use structured JSON and the existing HTTP helpers.
 - Display names are computed in the API layer and stored in `Chat.CachedDisplayName`.
 - Preserve application senders so bot and Workflow messages remain visible.
-- Adaptive Cards are terminal-rendered in `adaptive_card.go`.
+- Teams card attachments are terminal-rendered in `adaptive_card.go`; do not filter supported card MIME types merely because they are not Adaptive Cards.
 
 ### Bubble Tea
 
@@ -153,6 +153,7 @@ Do not silence a security scanner globally. A `#nosec` annotation is allowed onl
 ### Persistence
 
 - Use `GetAppDir()` and `GetCacheDir()` rather than constructing OS paths directly.
+- Chat and channel favourites are separate private ID sets in `favourites.json` and `channel_favourites.json`.
 - Keep config/cache migration tests when changing storage.
 - SQLite schema and access are in `db.go`.
 
