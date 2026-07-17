@@ -76,6 +76,144 @@ func TestMainViewKeepsBengaliInsideFixedColumns(t *testing.T) {
 	}
 }
 
+func TestWorkspaceViewAdaptsAcrossTerminalWidths(t *testing.T) {
+	chatName := "Design review"
+	body := "The responsive timeline is ready for review."
+	sender := "Amina Rahman"
+	app := NewApp()
+	app.SelectedIndex = 0
+	app.Chats = []Chat{{ID: "chat-id", CachedDisplayName: &chatName}}
+	app.Messages = []Message{{
+		ID:              "message-id",
+		CreatedDateTime: "2026-07-15T09:30:00Z",
+		From:            &MessageFrom{User: &MessageUser{DisplayName: &sender}},
+		Body:            &MessageBody{Content: &body},
+	}}
+	model := NewModel(app, "client-id", "user-id")
+	model.height = 24
+
+	model.width = 60
+	narrowList := stripANSI(model.View())
+	if !strings.Contains(narrowList, "CHATS") || strings.Contains(narrowList, body) {
+		t.Fatalf("narrow list pane did not isolate conversation navigation:\n%s", narrowList)
+	}
+
+	next, _ := model.handleNormalModeKey(tea.KeyMsg{Type: tea.KeyCtrlB})
+	if next.app.CompactListVisible {
+		t.Fatal("Ctrl+B did not switch a narrow workspace to the timeline")
+	}
+	narrowTimeline := stripANSI(next.View())
+	if !strings.Contains(narrowTimeline, body) || strings.Contains(narrowTimeline, "CHATS") {
+		t.Fatalf("narrow timeline pane did not isolate message content:\n%s", narrowTimeline)
+	}
+
+	next.width = 120
+	wide := stripANSI(next.View())
+	if !strings.Contains(wide, "CHATS") || !strings.Contains(wide, body) {
+		t.Fatalf("wide workspace did not render both panes:\n%s", wide)
+	}
+
+	for _, width := range []int{42, 60, 71, 72, 96, 109, 110, 144} {
+		next.width = width
+		view := next.View()
+		lines := strings.Split(view, "\n")
+		if len(lines) != next.height {
+			t.Fatalf("width %d produced %d rows, want %d", width, len(lines), next.height)
+		}
+		for row, line := range lines {
+			if got := cellWidth(line); got > width-1 {
+				t.Fatalf("width %d row %d uses %d cells, want <= %d: %q", width, row, got, width-1, line)
+			}
+		}
+	}
+}
+
+func TestNarrowPaneTogglePreservesChatChannelTabSwitching(t *testing.T) {
+	chatName := "Direct chat"
+	app := NewApp()
+	app.SelectedIndex = 0
+	app.Chats = []Chat{{ID: "chat-id", CachedDisplayName: &chatName}}
+	app.Features.TeamsChannels = true
+	app.TeamsData = []TeamWithChannels{{
+		Team:     Team{ID: "team-id", DisplayName: "Engineering"},
+		Channels: []Channel{{ID: "channel-id", DisplayName: "Releases"}},
+	}}
+	model := NewModel(app, "client-id", "user-id")
+	model.width = 60
+	model.unhiddenChannels = map[string]bool{"channel-id": true}
+
+	next, _ := model.handleNormalModeKey(tea.KeyMsg{Type: tea.KeyCtrlB})
+	if next.app.CompactListVisible {
+		t.Fatal("Ctrl+B did not open the timeline")
+	}
+	next, _ = next.handleNormalModeKey(tea.KeyMsg{Type: tea.KeyTab})
+	if next.channelSelectedIndex != 0 {
+		t.Fatalf("Tab selected channel index %d, want 0", next.channelSelectedIndex)
+	}
+	if next.app.CompactListVisible {
+		t.Fatal("Tab unexpectedly changed the narrow workspace pane")
+	}
+}
+
+func TestConsecutiveMessagesFromSameSenderAreGrouped(t *testing.T) {
+	sender := "Amina Rahman"
+	newerBody := "Second update"
+	olderBody := "First update"
+	app := NewApp()
+	app.Messages = []Message{
+		{ID: "newer", CreatedDateTime: "2026-07-15T09:32:00Z", From: &MessageFrom{User: &MessageUser{DisplayName: &sender}}, Body: &MessageBody{Content: &newerBody}},
+		{ID: "older", CreatedDateTime: "2026-07-15T09:30:00Z", From: &MessageFrom{User: &MessageUser{DisplayName: &sender}}, Body: &MessageBody{Content: &olderBody}},
+	}
+	model := NewModel(app, "client-id", "user-id")
+
+	view := stripANSI(model.renderMessages(80, 24))
+	if got := strings.Count(view, sender); got != 1 {
+		t.Fatalf("sender header count = %d, want 1 for a grouped run:\n%s", got, view)
+	}
+	if !strings.Contains(view, olderBody) || !strings.Contains(view, newerBody) {
+		t.Fatalf("grouping dropped message content:\n%s", view)
+	}
+}
+
+func TestSelectedMessageShowsContextualActionBar(t *testing.T) {
+	body := "A message with available actions"
+	app := NewApp()
+	app.MessageSelectionMode = true
+	app.MessageSelectedIndex = 0
+	app.Messages = []Message{{ID: "message-id", CreatedDateTime: "2026-07-15T09:30:00Z", Body: &MessageBody{Content: &body}}}
+	model := NewModel(app, "client-id", "user-id")
+
+	view := stripANSI(model.renderMessages(80, 24))
+	for _, action := range []string{"reply", "react", "copy", "links", "details"} {
+		if !strings.Contains(view, action) {
+			t.Fatalf("selected message action %q missing:\n%s", action, view)
+		}
+	}
+}
+
+func TestSharedModalFrameStaysWithinRequestedGeometry(t *testing.T) {
+	for _, size := range []struct{ w, h int }{{38, 12}, {60, 18}, {96, 32}} {
+		view := renderModalFrame(
+			"Keyboard shortcuts",
+			"j/k scroll · 50%",
+			strings.Repeat("বাংলা বার্তা এবং interface details\n", 20),
+			uiActionHints([][2]string{{"j/k", "scroll"}, {"Esc", "close"}}, size.w-4),
+			size.w,
+			size.h,
+			uiTheme.Brand,
+		)
+		lines := strings.Split(view, "\n")
+		if len(lines) > size.h {
+			t.Fatalf("%dx%d modal produced %d rows: %q", size.w, size.h, len(lines), view)
+		}
+		for row, line := range lines {
+			if got := cellWidth(line); got > size.w {
+				t.Fatalf("%dx%d modal row %d uses %d cells: %q", size.w, size.h, row, got, line)
+			}
+		}
+	}
+}
+
 func TestRenderMessagesReservesInlineImageRows(t *testing.T) {
 	name := "diagram.png"
 	contentType := "image/png"
@@ -360,7 +498,7 @@ func TestFavouriteChannelsSortFirstAndRenderStar(t *testing.T) {
 		t.Fatalf("channel order = %#v, want alerts first", channels)
 	}
 	view := stripANSI(model.renderChatList(60, 16))
-	if !strings.Contains(view, "★ # Operations » Alerts") {
+	if !strings.Contains(view, "★ # Operations / Alerts") {
 		t.Fatalf("favourite star missing from channel list:\n%s", view)
 	}
 }
@@ -395,15 +533,18 @@ func TestChannelFavouriteTogglePersistsAndPreservesSelection(t *testing.T) {
 	}
 }
 
-func TestPanelWidthsStayValidInNarrowTerminals(t *testing.T) {
-	for total := 3; total <= 80; total++ {
-		chatWidth := chatPanelWidth(total)
-		messageWidth := msgPanelWidth(total)
-		if chatWidth < 0 || messageWidth < 0 {
-			t.Fatalf("total %d produced negative widths: chat=%d message=%d", total, chatWidth, messageWidth)
+func TestWorkspaceMetricsStayValidAcrossTerminalWidths(t *testing.T) {
+	for total := 3; total <= 200; total++ {
+		metrics := workspaceMetricsForWidth(total)
+		if metrics.SidebarWidth < 0 || metrics.MessageWidth < 0 {
+			t.Fatalf("total %d produced negative widths: sidebar=%d messages=%d", total, metrics.SidebarWidth, metrics.MessageWidth)
 		}
-		if chatWidth+messageWidth+2 > total {
-			t.Fatalf("total %d overflowed: chat=%d message=%d", total, chatWidth, messageWidth)
+		if metrics.Mode == workspaceNarrow {
+			if metrics.SidebarWidth != total-1 || metrics.MessageWidth != total-1 {
+				t.Fatalf("total %d narrow panes do not fill frame: %#v", total, metrics)
+			}
+		} else if metrics.SidebarWidth+metrics.MessageWidth+metrics.SeparatorWidth > total-1 {
+			t.Fatalf("total %d overflowed: %#v", total, metrics)
 		}
 	}
 }

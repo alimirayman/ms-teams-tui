@@ -138,6 +138,7 @@ Do not silence a security scanner globally. A `#nosec` annotation is allowed onl
 - Read feature flags from `app.Features` inside the event loop.
 - The API returns messages newest-first; the timeline renders in reverse.
 - Mouse-wheel events always scroll the active message timeline and must never change chat or channel selection.
+- Narrow terminals use a single-pane list/timeline layout. Preserve `Ctrl+B` as the explicit pane toggle while keeping `Tab` dedicated to chats/channels.
 - Preserve terminal-native partial text selection with `Shift`+drag. When a message is selected and the terminal forwards `Cmd+C`, copy the complete plain-text message; keep `y` as the fallback.
 - Modified compose shortcuts rely on the Kitty keyboard disambiguation flag. Push it from `Model.Init` after Bubble Tea enters the alternate screen; the terminal keeps a separate alt-screen keyboard stack and discards it on exit. Keep ordinary text input in legacy form.
 - Unicode width must use existing cell/grapheme helpers. Do not use byte length for layout.

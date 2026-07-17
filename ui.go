@@ -25,34 +25,6 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// Lipgloss colour palette
-// ---------------------------------------------------------------------------
-
-var (
-	colCyan     = lipgloss.Color("#00D7D7")
-	colYellow   = lipgloss.Color("#FFD700")
-	colGreen    = lipgloss.Color("#00D75F")
-	colDarkGray = lipgloss.Color("#303030")
-	colWhite    = lipgloss.Color("#FFFFFF")
-	colRed      = lipgloss.Color("#FF4444")
-	colDimGray  = lipgloss.Color("#888888")
-)
-
-// Panel border styles.
-var (
-	normalBorder = lipgloss.NewStyle().
-			BorderStyle(lipgloss.RoundedBorder()).
-			BorderForeground(colGreen)
-
-	bellBorder = lipgloss.NewStyle().
-			BorderStyle(lipgloss.RoundedBorder()).
-			BorderForeground(colRed).
-			Foreground(colRed).
-			Bold(true).
-			Background(colWhite)
-)
-
-// ---------------------------------------------------------------------------
 // Bubble Tea messages (async events → model)
 // ---------------------------------------------------------------------------
 
@@ -358,19 +330,19 @@ type Model struct {
 // NewModel creates the initial Bubble Tea model.
 func NewModel(app *App, clientID, userID string) Model {
 	ta := textarea.New()
-	ta.Placeholder = "Type your message..."
+	ta.Placeholder = "Type your message…"
 	ta.ShowLineNumbers = false
 	ta.CharLimit = 0
 	ta.FocusedStyle.CursorLine = lipgloss.NewStyle()
 	ta.BlurredStyle.CursorLine = lipgloss.NewStyle()
 
 	ti := textinput.New()
-	ti.Placeholder = "Search history..."
+	ti.Placeholder = "Search history…"
 	ti.CharLimit = 100
 	ti.Width = 40
 
 	tiUser := textinput.New()
-	tiUser.Placeholder = "Filter local chats, or enter exact email to open..."
+	tiUser.Placeholder = "Filter conversations or enter an exact email…"
 	tiUser.CharLimit = 100
 	tiUser.Width = 40
 
@@ -394,11 +366,11 @@ func NewModel(app *App, clientID, userID string) Model {
 		fp.SortOrder = filepicker.SortAscending
 	}
 	fp.Styles = filepicker.DefaultStyles()
-	fp.Styles.Directory = lipgloss.NewStyle().Foreground(colCyan).Bold(true)
-	fp.Styles.File = lipgloss.NewStyle().Foreground(colWhite)
-	fp.Styles.Cursor = lipgloss.NewStyle().Foreground(colGreen).Bold(true)
-	fp.Styles.Selected = lipgloss.NewStyle().Foreground(colGreen).Bold(true)
-	fp.Styles.Permission = lipgloss.NewStyle().Foreground(colDimGray)
+	fp.Styles.Directory = lipgloss.NewStyle().Foreground(uiTheme.Brand).Bold(true)
+	fp.Styles.File = lipgloss.NewStyle().Foreground(uiTheme.Text)
+	fp.Styles.Cursor = lipgloss.NewStyle().Foreground(uiTheme.Brand).Background(uiTheme.SurfaceStrong).Bold(true)
+	fp.Styles.Selected = lipgloss.NewStyle().Foreground(uiTheme.Success).Bold(true)
+	fp.Styles.Permission = lipgloss.NewStyle().Foreground(uiTheme.Faint)
 
 	return Model{
 		app:                  app,
@@ -527,12 +499,10 @@ func (m Model) updateInternal(msg tea.Msg) (Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		m.textarea.SetWidth(msgPanelWidth(m.width) - 4)
-		popupH := m.height * 80 / 100
-		if popupH < 15 {
-			popupH = 15
-		}
-		m.filepicker.SetHeight(popupH - 7)
+		metrics := workspaceMetricsForWidth(m.width)
+		m.textarea.SetWidth(max(1, metrics.MessageWidth))
+		_, popupH := modalDimensions(m.width, m.height, 88, 84, 40, 14, 120, 42)
+		m.filepicker.SetHeight(max(1, popupH-8))
 
 	case MsgConversationSettled:
 		if msg.Generation != m.navigationGeneration {
@@ -1937,6 +1907,17 @@ func (m Model) handleNormalModeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	case "q", "ctrl+c":
 		return m, tea.Quit
 
+	case "ctrl+b":
+		if workspaceMetricsForWidth(m.width).Mode == workspaceNarrow {
+			m.app.CompactListVisible = !m.app.CompactListVisible
+			if m.app.CompactListVisible {
+				m.app.SetStatus("Conversation list", 2*time.Second)
+			} else {
+				m.app.SetStatus("Message timeline", 2*time.Second)
+			}
+		}
+		return m, nil
+
 	case "j", "down":
 		if m.channelSelectedIndex >= 0 {
 			// Channel section: wrap around at the bottom.
@@ -1990,6 +1971,9 @@ func (m Model) handleNormalModeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		}
 
 	case "enter":
+		if workspaceMetricsForWidth(m.width).Mode == workspaceNarrow {
+			m.app.CompactListVisible = false
+		}
 		return m.loadActiveConversationNow()
 
 	case "tab":
@@ -2037,12 +2021,14 @@ func (m Model) handleNormalModeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		m.app.SetStatus("No image found in the loaded messages", 4*time.Second)
 
 	case "z":
+		m.app.CompactListVisible = false
 		m = m.toggleMessageExpanded(m.messageIndexNearViewport())
 
 	case "i":
 		if m.app.SelectedIndex < 0 && m.channelSelectedIndex < 0 {
 			break
 		}
+		m.app.CompactListVisible = false
 		m.app.InputMode = true
 		m.app.InputBuffer = ""
 		m.textarea.Reset()
@@ -2101,6 +2087,7 @@ func (m Model) handleNormalModeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		if m.app.SelectedIndex < 0 && m.channelSelectedIndex < 0 {
 			break
 		}
+		m.app.CompactListVisible = false
 		m.app.MainChatScrollOffset = m.app.ScrollOffset
 		m.app.MainChatSnapToBottom = m.app.SnapToBottom
 		m.app.SearchPopupMode = true
@@ -2145,6 +2132,7 @@ func (m Model) handleNormalModeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 			m.app.SearchQuery = ""
 			m.app.SetStatus("Highlights cleared.", 3*time.Second)
 		} else {
+			m.app.CompactListVisible = true
 			m.app.SelectedIndex = -1
 			m.channelSelectedIndex = -1
 			m.app.SelectedChannelTeamID = ""
@@ -2192,6 +2180,7 @@ func (m Model) handleNormalModeKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 			break
 		}
 		if len(m.app.Messages) > 0 {
+			m.app.CompactListVisible = false
 			m.app.MessageSelectionMode = true
 			m.app.MessageSelectedIndex = m.messageIndexNearViewport()
 		}
@@ -3277,20 +3266,32 @@ func kittyImageID(key string) uint32 {
 // View renders the complete TUI.
 func (m Model) View() string {
 	if m.width == 0 {
-		return "Loading..."
+		return lipgloss.NewStyle().Foreground(uiTheme.Muted).Render("Starting Teams…")
 	}
 
-	chatW := chatPanelWidth(m.width)
-	msgW := msgPanelWidth(m.width)
+	metrics := workspaceMetricsForWidth(m.width)
+	chatW := metrics.SidebarWidth
+	msgW := metrics.MessageWidth
 	contentH := m.height - 1
 	if contentH < 1 {
 		contentH = 1
 	}
 
-	left := m.renderChatList(chatW, contentH)
-	right := m.renderRightPanel(msgW, contentH)
-	separator := lipgloss.NewStyle().Foreground(colGreen).Render("│")
-	top := joinColumns(left, chatW, separator, right, msgW, contentH)
+	showTimeline := true
+	var top string
+	if metrics.Mode == workspaceNarrow {
+		if m.app.CompactListVisible {
+			top = fitBlock(m.renderChatList(metrics.FrameWidth, contentH), metrics.FrameWidth, contentH)
+			showTimeline = false
+		} else {
+			top = fitBlock(m.renderRightPanel(metrics.FrameWidth, contentH), metrics.FrameWidth, contentH)
+		}
+	} else {
+		left := m.renderChatList(chatW, contentH)
+		right := m.renderRightPanel(msgW, contentH)
+		separator := lipgloss.NewStyle().Foreground(uiTheme.Border).Render("│")
+		top = joinColumns(left, chatW, separator, right, msgW, contentH)
+	}
 	mainView := top + "\n" + m.renderStatusBar(m.width)
 
 	var result string
@@ -3299,86 +3300,36 @@ func (m Model) View() string {
 		modal := m.renderUrlSelection(m.width, m.height)
 		result = lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, modal)
 	} else if m.app.FilePickerPopupMode {
-		popupW := m.width * 85 / 100
-		popupH := m.height * 80 / 100
-		if popupW < 45 {
-			popupW = 45
-		}
-		if popupH < 15 {
-			popupH = 15
-		}
+		popupW, popupH := modalDimensions(m.width, m.height, 88, 84, 40, 14, 120, 42)
 		modal := m.renderFilePickerPopup(popupW, popupH)
 		result = lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, modal)
 	} else if m.app.UserSearchPopupMode {
-		popupW := m.width * 85 / 100
-		popupH := m.height * 80 / 100
-		if popupW < 40 {
-			popupW = 40
-		}
-		if popupH < 10 {
-			popupH = 10
-		}
+		popupW, popupH := modalDimensions(m.width, m.height, 84, 78, 36, 10, 100, 36)
 		modal := m.renderUserSearchPopup(popupW, popupH)
 		result = lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, modal)
 	} else if m.app.SearchPopupMode {
-		popupW := m.width * 85 / 100
-		popupH := m.height * 80 / 100
-		if popupW < 40 {
-			popupW = 40
-		}
-		if popupH < 10 {
-			popupH = 10
-		}
+		popupW, popupH := modalDimensions(m.width, m.height, 88, 84, 38, 12, 120, 42)
 		modal := m.renderSearchPopup(popupW, popupH)
 		result = lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, modal)
 	} else if m.app.HelpPopupMode {
-		popupW := m.width * 70 / 100
-		popupH := m.height * 85 / 100
-		if popupW < 50 {
-			popupW = 50
-		}
-		if popupH < 10 {
-			popupH = 10
-		}
+		popupW, popupH := modalDimensions(m.width, m.height, 74, 86, 38, 12, 96, 44)
 		modal := m.renderHelpPopup(popupW, popupH)
 		result = lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, modal)
 	} else if m.app.PresencePopupMode {
 		var popupW, popupH int
 		if m.app.PresenceChatMode {
-			popupW = m.width * 70 / 100
-			popupH = m.height * 65 / 100
+			popupW, popupH = modalDimensions(m.width, m.height, 70, 66, 38, 12, 90, 32)
 		} else {
-			popupW = m.width * 55 / 100
-			popupH = m.height * 40 / 100
-		}
-		if popupW < 40 {
-			popupW = 40
-		}
-		if popupH < 10 {
-			popupH = 10
+			popupW, popupH = modalDimensions(m.width, m.height, 56, 42, 34, 10, 72, 24)
 		}
 		modal := m.renderPresencePopup(popupW, popupH)
 		result = lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, modal)
 	} else if m.app.UserProfilePopupMode {
-		popupW := m.width * 60 / 100
-		popupH := m.height * 50 / 100
-		if popupW < 40 {
-			popupW = 40
-		}
-		if popupH < 10 {
-			popupH = 10
-		}
+		popupW, popupH := modalDimensions(m.width, m.height, 62, 52, 36, 11, 76, 28)
 		modal := m.renderUserProfilePopup(popupW, popupH)
 		result = lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, modal)
 	} else if m.app.MessagePopupMode {
-		popupW := m.width * 85 / 100
-		popupH := m.height * 80 / 100
-		if popupW < 40 {
-			popupW = 40
-		}
-		if popupH < 10 {
-			popupH = 10
-		}
+		popupW, popupH := modalDimensions(m.width, m.height, 88, 84, 38, 12, 120, 44)
 		modal := m.renderMessagePopup(popupW, popupH)
 		result = lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, modal)
 	} else {
@@ -3400,20 +3351,13 @@ func (m Model) View() string {
 					resolvedAtt := m.resolvedAttachment(msgObj, att)
 					if cp, err := getAttachmentCachePath(resolvedAtt); err == nil {
 						if _, err := os.Stat(cp); err == nil {
-							popupW := m.width * 85 / 100
-							popupH := m.height * 80 / 100
-							if popupW < 40 {
-								popupW = 40
-							}
-							if popupH < 10 {
-								popupH = 10
-							}
+							popupW, popupH := modalDimensions(m.width, m.height, 88, 84, 38, 12, 120, 44)
 
 							popupX := (m.width - popupW) / 2
 							popupY := (m.height - popupH) / 2
 
-							innerW := popupW - 6
-							innerH := popupH - 4
+							innerW := popupW - 4
+							innerH := popupH - 5
 							if innerW < 10 {
 								innerW = 10
 							}
@@ -3431,11 +3375,11 @@ func (m Model) View() string {
 
 							if previewW >= 15 {
 								leftW := innerW - previewW - 2
-								rightPanelX := popupX + 3 + leftW + 2
+								rightPanelX := popupX + 2 + leftW + 2
 								imgX := rightPanelX + 1
 								imgY := popupY + 3
 								imgW := previewW - 2
-								imgH := (innerH - 1) - 2 // targetH - 2
+								imgH := innerH - 2
 
 								// Popup previews use a direct transmit-and-display command. This
 								// avoids blank placements in Ghostty-backed terminals such as cmux.
@@ -3446,15 +3390,19 @@ func (m Model) View() string {
 				}
 			}
 		}
-	} else if showMainView && m.app.Features.FilePreviewInTerminal {
+	} else if showMainView && showTimeline && m.app.Features.FilePreviewInTerminal {
 		var media strings.Builder
+		messageOriginX := 0
+		if metrics.Mode != workspaceNarrow {
+			messageOriginX = chatW + 1
+		}
 		for index, placement := range m.app.InlineImagePlacements {
 			if _, err := os.Stat(placement.CachePath); err != nil {
 				continue
 			}
 			media.WriteString(m.persistentKittySequence(
 				placement.CachePath,
-				chatW+1+placement.Col,
+				messageOriginX+placement.Col,
 				1+placement.Row,
 				placement.Width,
 				placement.Height,
@@ -3483,36 +3431,42 @@ func (m Model) conversationHeader(w int, detail string) string {
 	name := "No conversation"
 	if entry := m.activeChannelEntry(); entry != nil {
 		kind = "CHANNEL"
-		name = entry.teamName + " / " + entry.channelName
+		name = entry.channelName
+		if detail == "" {
+			detail = entry.teamName
+		}
 	} else if chat := m.app.GetSelectedChat(); chat != nil && chat.CachedDisplayName != nil {
 		name = *chat.CachedDisplayName
 	}
-	left := lipgloss.NewStyle().Foreground(colCyan).Bold(true).Render(" "+kind) + "  " + fitLine(name, w/2)
+	left := uiBadge(kind, uiTheme.Brand) + " " + lipgloss.NewStyle().Foreground(uiTheme.Text).Bold(true).Render(fitLine(name, max(1, w/2)))
 	if detail == "" {
 		if m.app.LoadingMessages {
-			detail = "syncing"
+			detail = "syncing…"
 		} else {
 			detail = fmt.Sprintf("%d messages", len(m.app.Messages))
 			if m.app.MaxScroll > 0 {
 				if m.app.SnapToBottom || m.app.ScrollOffset >= m.app.MaxScroll {
-					detail += " · latest"
+					detail += "  latest"
 				} else {
 					progress := m.app.ScrollOffset * 100 / m.app.MaxScroll
-					detail += fmt.Sprintf(" · %d%%", progress)
+					detail += fmt.Sprintf("  %d%%", progress)
 				}
 			}
 		}
 	}
-	right := lipgloss.NewStyle().Foreground(colDimGray).Render(detail + " ")
+	right := lipgloss.NewStyle().Foreground(uiTheme.Muted).Render(detail + " ")
 	return headerLine(left, right, w)
 }
 
 // renderRightPanel renders the messages panel (with optional input area).
 func (m Model) renderRightPanel(w, h int) string {
 	if m.app.SelectedIndex < 0 && m.channelSelectedIndex < 0 {
-		idleMsg := "💤 Sleep Mode\n\nNo chat selected. Polling is paused.\n\nPress 'j' or 'k' to select a chat\nand resume polling."
+		idleMsg := lipgloss.NewStyle().Foreground(uiTheme.Brand).Bold(true).Render("PAUSED") +
+			"\n\n" + lipgloss.NewStyle().Foreground(uiTheme.Text).Render("No conversation selected") +
+			"\n" + lipgloss.NewStyle().Foreground(uiTheme.Muted).Render("Polling is paused until you choose a chat or channel.") +
+			"\n\n" + uiActionHints([][2]string{{"j/k", "choose"}, {"Enter", "open"}, {"?", "shortcuts"}}, w)
 		return fitBlock(
-			lipgloss.NewStyle().Foreground(colDimGray).Render("Idle")+"\n\n"+idleMsg,
+			uiSectionHeader("Workspace", 0, w, false)+"\n"+uiRule(w)+"\n\n"+idleMsg,
 			w,
 			h,
 		)
@@ -3527,9 +3481,9 @@ func (m Model) renderRightPanel(w, h int) string {
 			}
 			title = m.conversationHeader(w, fmt.Sprintf("message %d/%d", position, len(m.app.Messages)))
 		}
-		msgContent := m.renderMessages(w, h-1)
+		msgContent := m.renderMessages(w, h-2)
 		return fitBlock(
-			fitLine(lipgloss.NewStyle().Foreground(colDimGray).Render(title), w)+"\n"+msgContent,
+			fitLine(title, w)+"\n"+uiRule(w)+"\n"+msgContent,
 			w,
 			h,
 		)
@@ -3539,7 +3493,7 @@ func (m Model) renderRightPanel(w, h int) string {
 	// conversation context.
 	maxTextRows := max(3, min(10, h/3))
 	textRows := max(3, min(m.textarea.LineCount(), maxTextRows))
-	inputH := textRows + 2 // divider + key-hint line
+	inputH := textRows + 3 // divider + mode header + contextual footer
 	if m.app.ReplyToMessage != nil {
 		inputH += 2 // quoted-message line + separator
 	}
@@ -3569,37 +3523,31 @@ func (m Model) renderRightPanel(w, h int) string {
 				email = *sug.Email
 			}
 
-			line := fmt.Sprintf(" %s", displayName)
+			line := lipgloss.NewStyle().Foreground(uiTheme.Text).Bold(true).Render(displayName)
 			if email != "" {
-				line += fmt.Sprintf(" (%s)", email)
+				line += lipgloss.NewStyle().Foreground(uiTheme.Muted).Render(fmt.Sprintf("  %s", email))
 			}
-
-			if i == m.app.MentionSelectedIndex {
-				line = lipgloss.NewStyle().
-					Background(lipgloss.Color("#5F87FF")).
-					Foreground(lipgloss.Color("#FFFFFF")).
-					Bold(true).
-					Render(" >" + line)
-			} else {
-				line = lipgloss.NewStyle().Foreground(lipgloss.Color("#E2E2E2")).Render("  " + line)
-			}
-			items = append(items, fitLine(line, w-4))
+			items = append(items, uiListRow(line, max(1, w-2), i == m.app.MentionSelectedIndex, false))
 		}
 
 		mentionView = lipgloss.NewStyle().
 			BorderStyle(lipgloss.RoundedBorder()).
-			BorderForeground(colYellow).
-			Width(w).
+			BorderForeground(uiTheme.Border).
+			Width(max(1, w-2)).
 			Height(limit).
 			Render(lipgloss.JoinVertical(lipgloss.Left, items...))
 	}
 
-	msgH := h - inputH - mentionH - 1
+	separators := 1
+	if mentionH > 0 {
+		separators++
+	}
+	msgH := h - inputH - mentionH - separators
 	if msgH < 1 {
 		msgH = 1
 	}
 
-	msgContent := m.renderMessages(w, msgH-1)
+	msgContent := m.renderMessages(w, max(1, msgH-2))
 	titleDetail := "composing"
 	if m.app.EditingMessageID != nil {
 		titleDetail = "editing"
@@ -3621,7 +3569,7 @@ func (m Model) renderRightPanel(w, h int) string {
 	}
 	title := m.conversationHeader(w, titleDetail)
 	msgBox := fitBlock(
-		fitLine(lipgloss.NewStyle().Foreground(colDimGray).Render(title), w)+"\n"+msgContent,
+		fitLine(title, w)+"\n"+uiRule(w)+"\n"+msgContent,
 		w,
 		msgH,
 	)
@@ -3629,22 +3577,23 @@ func (m Model) renderRightPanel(w, h int) string {
 	m.textarea.SetWidth(w)
 	m.textarea.SetHeight(textRows)
 
-	// Build input box contents — add quote preview when replying.
-	hintText := "Enter send · Shift+Enter newline · Cmd+/ Important · @ mention · Cmd/Ctrl+V paste"
-	if m.app.Features.FileUpload {
-		hintText += " · Ctrl+f attach"
+	// Build a structured composer with a compact mode header and contextual footer.
+	modeLabel := "COMPOSE"
+	if m.app.EditingMessageID != nil {
+		modeLabel = "EDIT MESSAGE"
+	} else if m.app.ChannelReplyToID != "" || m.app.ReplyToMessage != nil {
+		modeLabel = "REPLY"
 	}
-	hintText += " · Ctrl+g editor · Esc cancel"
+	leftMode := lipgloss.NewStyle().Foreground(uiTheme.Brand).Bold(true).Render(" " + modeLabel)
+	var composerMeta []string
 	if m.app.ComposeImportant {
-		hintText = "[! IMPORTANT] " + hintText
+		composerMeta = append(composerMeta, uiBadge("IMPORTANT", uiTheme.Warning))
 	}
-
-	hintColor := colDimGray
-	if m.app.ComposeImportant {
-		hintColor = colYellow
+	attachmentCount := len(m.app.ComposedImages) + len(m.app.ComposedFiles)
+	if attachmentCount > 0 {
+		composerMeta = append(composerMeta, uiBadge(fmt.Sprintf("%d ATTACHED", attachmentCount), uiTheme.Accent))
 	}
-	hintLine := fitLine(lipgloss.NewStyle().Foreground(hintColor).Bold(m.app.ComposeImportant).Render(hintText), w)
-	inputParts := []string{hintLine}
+	inputParts := []string{headerLine(leftMode, strings.Join(composerMeta, " "), w)}
 
 	if m.app.ReplyToMessage != nil {
 		ref := m.app.ReplyToMessage
@@ -3662,19 +3611,25 @@ func (m Model) renderRightPanel(w, h int) string {
 		if m.isOwn(*ref) {
 			sender = "Me"
 		}
-		bar := lipgloss.NewStyle().Foreground(lipgloss.Color("#4A90D9")).Bold(true).Render("▎")
-		name := lipgloss.NewStyle().Foreground(lipgloss.Color("#7EC8E3")).Bold(true).Render(sender)
-		text := lipgloss.NewStyle().Foreground(lipgloss.Color("#6C7A89")).Render(": " + preview)
+		bar := lipgloss.NewStyle().Foreground(uiTheme.OtherMessage).Bold(true).Render("▎")
+		name := lipgloss.NewStyle().Foreground(uiTheme.OtherMessage).Bold(true).Render(sender)
+		text := lipgloss.NewStyle().Foreground(uiTheme.Muted).Render(": " + preview)
 		quoteLine := bar + " " + name + text
 		inputParts = append(inputParts, fitLine(quoteLine, w))
 		// Separator between quote and textarea.
-		inputParts = append(inputParts, lipgloss.NewStyle().Foreground(colDimGray).Render(strings.Repeat("─", w)))
+		inputParts = append(inputParts, uiRule(w))
 		m.textarea.SetHeight(textRows)
 	}
 
 	inputParts = append(inputParts, m.textarea.View())
 
-	inputParts = append([]string{lipgloss.NewStyle().Foreground(colGreen).Render(strings.Repeat("─", w))}, inputParts...)
+	actions := [][2]string{{"Enter", "send"}, {"Shift+Enter", "new line"}, {"@", "mention"}}
+	if m.app.Features.FileUpload {
+		actions = append(actions, [2]string{"Ctrl+F", "attach"})
+	}
+	actions = append(actions, [2]string{"Esc", "cancel"})
+	inputParts = append(inputParts, uiActionHints(actions, w))
+	inputParts = append([]string{uiRule(w)}, inputParts...)
 	inputBox := fitBlock(strings.Join(inputParts, "\n"), w, inputH)
 
 	if mentionView != "" {
@@ -3837,12 +3792,12 @@ func (m Model) activeConversationID() string {
 }
 
 func (m Model) renderChatList(w, h int) string {
-	titleText := fmt.Sprintf(" INBOX  %d", len(m.app.Chats))
-	title := lipgloss.NewStyle().Foreground(colWhite).Bold(true).Render(titleText)
+	title := uiSectionHeader("Chats", len(m.app.Chats), w, m.channelSelectedIndex < 0)
 	chans := m.allChannels()
 
 	if len(m.app.Chats) == 0 && (!m.app.Features.TeamsChannels || (!m.app.TeamsDataLoading && len(chans) == 0)) {
-		return lipgloss.JoinVertical(lipgloss.Left, title, m.app.Status)
+		empty := lipgloss.NewStyle().Foreground(uiTheme.Muted).Render("  No conversations yet")
+		return lipgloss.JoinVertical(lipgloss.Left, title, empty)
 	}
 
 	// Total lines available = h minus the title row.
@@ -3929,58 +3884,30 @@ func (m Model) renderChatList(w, h int) string {
 
 		prefix := ""
 		if isFav {
-			prefix += "★ "
+			prefix += lipgloss.NewStyle().Foreground(uiTheme.Warning).Render("★") + " "
 		}
 		if unread {
-			prefix += "● "
+			prefix += lipgloss.NewStyle().Foreground(uiTheme.Accent).Render("●") + " "
 		}
 		if reactionEmoji != "" {
 			prefix += reactionEmoji + " "
 		}
 
-		labelStr := prefix + chatTypeIcon + " " + displayName
-
-		var label string
-		if i == m.app.SelectedIndex && m.channelSelectedIndex < 0 {
-			labelStr = "› " + labelStr
-			label = lipgloss.NewStyle().
-				Foreground(colYellow).
-				Bold(unread || reactionEmoji != "").
-				Background(colDarkGray).
-				Render(padRight(fitLine(labelStr, w), w))
-		} else {
-			typeTag := lipgloss.NewStyle().Foreground(colCyan).Render(chatTypeIcon)
-			base := typeTag + " " + displayName
-			if isFav {
-				star := lipgloss.NewStyle().Foreground(colYellow).Render("★ ")
-				base = star + base
-			}
-			if unread || reactionEmoji != "" {
-				pfx := ""
-				if unread {
-					pfx += "● "
-				}
-				if reactionEmoji != "" {
-					pfx += reactionEmoji + " "
-				}
-				base = lipgloss.NewStyle().Bold(true).Render(pfx) + base
-			}
-			label = fitLine(base, w)
-		}
+		icon := lipgloss.NewStyle().Foreground(uiTheme.Brand).Render(chatTypeIcon)
+		nameStyle := lipgloss.NewStyle().Foreground(uiTheme.Text).Bold(unread || reactionEmoji != "")
+		labelStr := prefix + icon + " " + nameStyle.Render(displayName)
+		selected := i == m.app.SelectedIndex && m.channelSelectedIndex < 0
+		label := uiListRow(labelStr, w, selected, false)
 		lines = append(lines, label)
 	}
 
 	// ── Teams channels section ───────────────────────────────────────────
 	if m.app.Features.TeamsChannels && teamsLines > 0 {
 		if m.app.TeamsDataLoading {
-			divider := lipgloss.NewStyle().Foreground(colDimGray).Render("Teams (loading…)")
+			divider := uiSectionHeader("Channels · syncing", 0, w, false)
 			lines = append(lines, divider)
 		} else if len(chans) > 0 {
-			dividerText := fmt.Sprintf(" CHANNELS  %d", len(chans))
-			if m.channelSelectedIndex >= 0 {
-				dividerText += "  [focused]"
-			}
-			divider := lipgloss.NewStyle().Foreground(colDimGray).Render(dividerText)
+			divider := uiSectionHeader("Channels", len(chans), w, m.channelSelectedIndex >= 0)
 			lines = append(lines, divider)
 
 			// Channel rows available = teamsLines - 1 (divider).
@@ -4035,40 +3962,21 @@ func (m Model) renderChatList(w, h int) string {
 
 				prefix := ""
 				if unread {
-					prefix = "● "
+					prefix = lipgloss.NewStyle().Foreground(uiTheme.Accent).Render("●") + " "
 				}
 				if isFavourite {
-					prefix += "★ "
+					prefix += lipgloss.NewStyle().Foreground(uiTheme.Warning).Render("★") + " "
 				}
 
-				var label string
-				if ci == m.channelSelectedIndex {
-					label = lipgloss.NewStyle().
-						Foreground(colYellow).
-						Background(colDarkGray).
-						Bold(unread).
-						Render(padRight(fitLine("› "+prefix+"# "+entry.teamName+" » "+entry.channelName, w), w))
-				} else {
-					var textStyle lipgloss.Style
-					if isHidden {
-						textStyle = lipgloss.NewStyle().Foreground(colDimGray)
-					} else {
-						textStyle = lipgloss.NewStyle()
-					}
-					if unread {
-						textStyle = textStyle.Bold(true)
-					}
-
-					var icon string
-					if isHidden {
-						icon = lipgloss.NewStyle().Foreground(colDimGray).Render("#")
-					} else {
-						icon = lipgloss.NewStyle().Foreground(lipgloss.Color("#5F87FF")).Render("#")
-					}
-
-					labelStr := prefix + icon + " " + entry.teamName + " » " + entry.channelName
-					label = textStyle.Render(fitLine(labelStr, w))
+				iconColor := uiTheme.Brand
+				if isHidden {
+					iconColor = uiTheme.Faint
 				}
+				icon := lipgloss.NewStyle().Foreground(iconColor).Render("#")
+				team := lipgloss.NewStyle().Foreground(uiTheme.Muted).Render(entry.teamName + " /")
+				name := lipgloss.NewStyle().Foreground(uiTheme.Text).Bold(unread).Render(entry.channelName)
+				labelStr := prefix + icon + " " + team + " " + name
+				label := uiListRow(labelStr, w, ci == m.channelSelectedIndex, isHidden)
 				lines = append(lines, label)
 			}
 		}
@@ -4094,7 +4002,7 @@ func (m Model) messageBodySource(msg *Message, reactions, attachments string) st
 		if m.app.SearchActive && m.app.SearchQuery != "" {
 			subject = highlightQuery(subject, m.app.SearchQuery)
 		}
-		subject = lipgloss.NewStyle().Bold(true).Foreground(colWhite).Render(subject)
+		subject = lipgloss.NewStyle().Bold(true).Foreground(uiTheme.Text).Render(subject)
 		if body != "" {
 			body = subject + "\n" + body
 		} else {
@@ -4168,22 +4076,60 @@ func collapsedMessageLines(lines []string, expanded bool) []string {
 	}
 	visible := append([]string(nil), lines[:collapsedMessageLineLimit-1]...)
 	remaining := len(lines) - len(visible)
-	indicator := lipgloss.NewStyle().Foreground(colDimGray).Render(
-		fmt.Sprintf("… %d more lines  [z expand · m actions]", remaining),
-	)
+	indicator := lipgloss.NewStyle().Foreground(uiTheme.Muted).Render(fmt.Sprintf("… %d more lines", remaining)) +
+		"  " + uiKey("z") + " expand"
 	return append(visible, indicator)
+}
+
+func sameMessageGroup(previous, current Message) bool {
+	if previous.IsReply != current.IsReply || messageSenderName(previous) != messageSenderName(current) {
+		return false
+	}
+	previousTime, previousErr := time.Parse(time.RFC3339Nano, previous.CreatedDateTime)
+	currentTime, currentErr := time.Parse(time.RFC3339Nano, current.CreatedDateTime)
+	if previousErr != nil || currentErr != nil {
+		return false
+	}
+	delta := currentTime.Sub(previousTime)
+	return delta >= 0 && delta <= 5*time.Minute
+}
+
+func timelineDayDivider(label string, width int) string {
+	label = strings.TrimSpace(label)
+	if label == "" || width <= 0 {
+		return ""
+	}
+	styled := lipgloss.NewStyle().Foreground(uiTheme.Faint).Bold(true).Render(" " + label + " ")
+	remaining := max(0, width-cellWidth(styled))
+	left := remaining / 2
+	right := remaining - left
+	return lipgloss.NewStyle().Foreground(uiTheme.Border).Render(strings.Repeat("─", left)) + styled +
+		lipgloss.NewStyle().Foreground(uiTheme.Border).Render(strings.Repeat("─", right))
+}
+
+func selectedMessageActionBar(width int) string {
+	return uiActionHints([][2]string{
+		{"a", "reply"},
+		{"r", "react"},
+		{"y", "copy"},
+		{"u", "links"},
+		{"v", "details"},
+	}, width)
 }
 
 func (m Model) renderMessages(w, h int) string {
 	m.app.InlineImagePlacements = nil
 	if m.app.LoadingMessages && len(m.app.Messages) == 0 {
-		return lipgloss.NewStyle().Foreground(colDimGray).Render("Loading messages...")
+		return lipgloss.NewStyle().Foreground(uiTheme.Muted).Render("Loading messages…")
 	}
 	if len(m.app.Messages) == 0 {
-		return lipgloss.NewStyle().Foreground(colDimGray).Render("No messages.")
+		return lipgloss.NewStyle().Foreground(uiTheme.Muted).Render("No messages yet.")
 	}
 
-	maxW := w * 9 / 10 // 90% of panel width
+	maxW := w * 82 / 100
+	if w < 54 {
+		maxW = w * 9 / 10
+	}
 
 	// Messages arrive newest-first from API; render newest at the bottom.
 	msgs := m.app.Messages
@@ -4194,6 +4140,8 @@ func (m Model) renderMessages(w, h int) string {
 	var selectedStartLine, selectedEndLine int = -1, -1
 	var pendingScrollLine int = -1
 	var imagePlacements []InlineImagePlacement
+	var previousRendered Message
+	hasPreviousRendered := false
 
 	m.app.MessageLineOffsets = make([]int, len(msgs))
 
@@ -4217,7 +4165,20 @@ func (m Model) renderMessages(w, h int) string {
 
 		msgTime, _ := time.Parse(time.RFC3339Nano, msg.CreatedDateTime)
 		msgTime = msgTime.Local()
-		showHeader := true
+		if !msgTime.IsZero() {
+			dayChanged := !hasPreviousRendered
+			if hasPreviousRendered {
+				previousTime, _ := time.Parse(time.RFC3339Nano, previousRendered.CreatedDateTime)
+				dayChanged = previousTime.Local().Format("2006-01-02") != msgTime.Format("2006-01-02")
+			}
+			if dayChanged {
+				if len(lines) > 0 {
+					lines = append(lines, "")
+				}
+				lines = append(lines, timelineDayDivider(msgTime.Format("Mon, Jan 02"), w))
+			}
+		}
+		showHeader := !hasPreviousRendered || !sameMessageGroup(previousRendered, msg)
 
 		if showHeader {
 			if len(lines) > 0 {
@@ -4225,18 +4186,19 @@ func (m Model) renderMessages(w, h int) string {
 			}
 			dateStr := ""
 			if !msgTime.IsZero() {
-				dateStr = msgTime.Format("Jan 02 15:04")
+				dateStr = msgTime.Format("15:04")
 			}
 			var header string
 			senderName := sender
 			if m.isOwn(msg) {
 				senderName = "Me"
 			}
+			importance := ""
 			switch strings.ToLower(msg.Importance) {
 			case "high":
-				senderName += " ! IMPORTANT"
+				importance = " " + uiBadge("IMPORTANT", uiTheme.Warning)
 			case "urgent":
-				senderName += " !! URGENT"
+				importance = " " + uiBadge("URGENT", uiTheme.Danger)
 			}
 			if m.app.SearchActive && m.app.SearchQuery != "" {
 				senderName = highlightQuery(senderName, m.app.SearchQuery)
@@ -4244,34 +4206,34 @@ func (m Model) renderMessages(w, h int) string {
 
 			if msg.IsReply {
 				if alignRight {
-					// Right-aligned reply.
-					color := lipgloss.Color("#5F87AF") // others reply color (blueish)
+					color := uiTheme.OtherMessage
 					if m.isOwn(msg) {
-						color = lipgloss.Color("#5FAF87") // own reply color (greenish)
+						color = uiTheme.OwnMessage
 					}
-					h := lipgloss.NewStyle().Foreground(color).Render(dateStr + " " + senderName + " ↳")
+					h := lipgloss.NewStyle().Foreground(color).Bold(true).Render(senderName) + importance +
+						lipgloss.NewStyle().Foreground(uiTheme.Faint).Render("  "+dateStr+"  ↳")
 					header = padLeft(h, w)
 				} else {
-					// Left-aligned reply.
-					color := lipgloss.Color("#5F87AF") // others reply color (blueish)
+					color := uiTheme.OtherMessage
 					if m.isOwn(msg) {
-						color = lipgloss.Color("#5FAF87") // own reply color (greenish)
+						color = uiTheme.OwnMessage
 					}
-					replyPrefix := lipgloss.NewStyle().Foreground(colDimGray).Render("  ↳ ")
-					header = replyPrefix + lipgloss.NewStyle().Foreground(color).Render(senderName+" "+dateStr)
+					replyPrefix := lipgloss.NewStyle().Foreground(uiTheme.Faint).Render("  ↳ ")
+					header = replyPrefix + lipgloss.NewStyle().Foreground(color).Bold(true).Render(senderName) + importance +
+						lipgloss.NewStyle().Foreground(uiTheme.Faint).Render("  "+dateStr)
 				}
 			} else {
 				if alignRight {
-					// Right-aligned main thread message.
-					h := lipgloss.NewStyle().Foreground(colGreen).Render(dateStr + " " + senderName)
+					h := lipgloss.NewStyle().Foreground(uiTheme.OwnMessage).Bold(true).Render(senderName) + importance +
+						lipgloss.NewStyle().Foreground(uiTheme.Faint).Render("  "+dateStr)
 					header = padLeft(h, w)
 				} else {
-					// Left-aligned main thread message.
-					color := colCyan
+					color := uiTheme.OtherMessage
 					if m.isOwn(msg) {
-						color = colGreen
+						color = uiTheme.OwnMessage
 					}
-					header = lipgloss.NewStyle().Foreground(color).Render(senderName + " " + dateStr)
+					header = lipgloss.NewStyle().Foreground(color).Bold(true).Render(senderName) + importance +
+						lipgloss.NewStyle().Foreground(uiTheme.Faint).Render("  "+dateStr)
 				}
 			}
 			lines = append(lines, header)
@@ -4312,12 +4274,17 @@ func (m Model) renderMessages(w, h int) string {
 		for _, line := range msgLines {
 			content := replyIndent + padStr + line
 			if isSelected {
-				content = lipgloss.NewStyle().
-					Background(colDarkGray).
-					Foreground(colYellow).
-					Render(padRight(fitLine(content, w), w))
+				rail := lipgloss.NewStyle().Foreground(uiTheme.Brand).Bold(true).Render("▌")
+				content = rail + lipgloss.NewStyle().Background(uiTheme.SurfaceStrong).
+					Render(padRight(fitLine(" "+content, max(1, w-1)), max(1, w-1)))
 			}
 			lines = append(lines, content)
+		}
+		if isSelected {
+			rail := lipgloss.NewStyle().Foreground(uiTheme.Brand).Bold(true).Render("▌")
+			actions := rail + lipgloss.NewStyle().Background(uiTheme.SurfaceStrong).
+				Render(padRight(" "+selectedMessageActionBar(max(1, w-3)), max(1, w-1)))
+			lines = append(lines, actions)
 		}
 
 		if m.app.Features.FilePreviewInTerminal && w >= 40 {
@@ -4381,13 +4348,13 @@ func (m Model) renderMessages(w, h int) string {
 				if failed > 1 {
 					label = fmt.Sprintf("%d image previews unavailable — press v, then Space to retry", failed)
 				}
-				lines = append(lines, strings.Repeat(" ", baseCol)+lipgloss.NewStyle().Foreground(colYellow).Render(label))
+				lines = append(lines, strings.Repeat(" ", baseCol)+lipgloss.NewStyle().Foreground(uiTheme.Warning).Render(label))
 			} else if missing > 0 {
 				label := "loading image preview"
 				if missing > 1 {
 					label = fmt.Sprintf("loading %d image previews", missing)
 				}
-				lines = append(lines, strings.Repeat(" ", baseCol)+lipgloss.NewStyle().Foreground(colDimGray).Render(label))
+				lines = append(lines, strings.Repeat(" ", baseCol)+lipgloss.NewStyle().Foreground(uiTheme.Muted).Render(label))
 			}
 			for index := range prepared {
 				prepared[index].Row = len(lines)
@@ -4407,6 +4374,8 @@ func (m Model) renderMessages(w, h int) string {
 		if isSelected {
 			selectedEndLine = len(lines)
 		}
+		previousRendered = msg
+		hasPreviousRendered = true
 	}
 
 	// Apply scroll.
@@ -4492,35 +4461,53 @@ func (m Model) renderMessages(w, h int) string {
 // ---------------------------------------------------------------------------
 
 func (m Model) renderStatusBar(w int) string {
-	style := lipgloss.NewStyle().Foreground(colGreen).Background(lipgloss.Color("#202020"))
+	width := max(1, w-1)
+	style := lipgloss.NewStyle().Foreground(uiTheme.Muted).Background(uiTheme.Surface)
 	if m.app.DeleteConfirmMode {
-		return lipgloss.NewStyle().Foreground(colRed).Background(lipgloss.Color("#202020")).Bold(true).
-			Render(padRight(" DELETE MESSAGE? (y:yes / n:no)", w-1))
+		prompt := uiBadge("DELETE MESSAGE?", uiTheme.Danger) + "  " +
+			uiActionHints([][2]string{{"y", "confirm"}, {"n", "cancel"}}, width)
+		return style.Render(padRight(prompt, width))
 	}
 	if m.app.ReactionMode {
-		return lipgloss.NewStyle().Foreground(colYellow).Background(lipgloss.Color("#202020")).
-			Render(padRight(" REACT: 1:👍 2:❤️ 3:😂 4:😮 5:😢 6:😡 (ESC:cancel)", w-1))
+		prompt := lipgloss.NewStyle().Foreground(uiTheme.Warning).Bold(true).Render(" REACT") +
+			"  1 👍  2 ❤️  3 😂  4 😮  5 😢  6 😡  " + uiKey("Esc") + " cancel"
+		return style.Render(padRight(prompt, width))
 	}
-	parts := make([]string, 0, 2)
+
+	left := ""
 	if m.app.Status != "" {
-		parts = append(parts, m.app.Status)
+		statusColor := uiTheme.Success
+		statusIcon := "✓"
+		lower := strings.ToLower(m.app.Status)
+		if strings.Contains(lower, "error") || strings.Contains(lower, "failed") || strings.Contains(lower, "cannot") || strings.Contains(lower, "could not") {
+			statusColor = uiTheme.Danger
+			statusIcon = "!"
+		} else if strings.Contains(lower, "loading") || strings.Contains(lower, "sync") || strings.Contains(lower, "finding") || strings.Contains(lower, "opening") || strings.Contains(lower, "preparing") {
+			statusColor = uiTheme.Warning
+			statusIcon = "•"
+		}
+		left = lipgloss.NewStyle().Foreground(statusColor).Bold(true).Render(" "+statusIcon+" ") +
+			lipgloss.NewStyle().Foreground(uiTheme.Text).Render(m.app.Status)
+	} else {
+		left = " " + m.statusHint()
 	}
-	if hint := m.statusHint(); hint != "" {
-		parts = append(parts, hint)
+
+	connection := lipgloss.NewStyle().Foreground(uiTheme.Success).Render("●") + " active"
+	if !m.focused {
+		connection = lipgloss.NewStyle().Foreground(uiTheme.Faint).Render("○") + " unfocused"
+	} else if m.app.LoadingMessages && len(m.app.Messages) > 0 {
+		connection = lipgloss.NewStyle().Foreground(uiTheme.Warning).Render("●") + " syncing"
 	}
-	left := strings.Join(parts, "  ·  ")
-	right := fmt.Sprintf("n:%s ", m.app.NotificationMode)
-	if m.app.LoadingMessages && len(m.app.Messages) > 0 {
-		left = "syncing  ·  " + left
-	}
-	text := headerLine(" "+left, right, w-1)
+	right := lipgloss.NewStyle().Foreground(uiTheme.Muted).Render(connection + "  n:" + m.app.NotificationMode.String() + " ")
+	text := headerLine(left, right, width)
 	if m.app.VisualBellActive() {
-		style = style.Background(lipgloss.Color("#5F0000")).Foreground(colWhite).Bold(true)
+		style = style.Background(uiTheme.Danger).Foreground(uiTheme.Text).Bold(true)
 	}
-	return style.Render(padRight(text, w-1))
+	return style.Render(padRight(text, width))
 }
 
 func (m Model) statusHint() string {
+	metrics := workspaceMetricsForWidth(m.width)
 	switch {
 	case m.app.FilePickerPopupMode:
 		return "Files: type to filter, arrows move, Enter open/attach, Esc cancel"
@@ -4545,6 +4532,10 @@ func (m Model) statusHint() string {
 		return "Copy URL: j/k move, Enter copy, Esc cancel"
 	case m.app.MessageSelectionMode:
 		return "MESSAGES  j/k move  z/Enter expand  v full  a reply  r react  y/Cmd+C copy  m/Esc back"
+	case metrics.Mode == workspaceNarrow && m.app.CompactListVisible:
+		return "LIST  j/k move  Enter open  Tab chats/channels  Ctrl+B timeline  ? help"
+	case metrics.Mode == workspaceNarrow:
+		return "TIMELINE  J/K scroll  m actions  i compose  Ctrl+B conversations  ? help"
 	case m.app.SelectedIndex < 0 && m.channelSelectedIndex < 0:
 		return "Sleep: j/k select, h/? help, q quit"
 	case m.channelSelectedIndex >= 0:
@@ -4557,34 +4548,6 @@ func (m Model) statusHint() string {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-func chatPanelWidth(total int) int {
-	width := total * 27 / 100
-	if width < 26 {
-		width = 26
-	}
-	if width > 44 {
-		width = 44
-	}
-	if total-width-2 < 48 {
-		width = total - 50
-	}
-	if width < 18 {
-		width = 18
-	}
-	maxWidth := total - 3
-	if maxWidth < 0 {
-		maxWidth = 0
-	}
-	if width > maxWidth {
-		width = maxWidth
-	}
-	return width
-}
-
-func msgPanelWidth(total int) int {
-	return max(0, total-chatPanelWidth(total)-2)
-}
 
 func truncate(s string, maxLen int) string {
 	return fitLine(s, maxLen)
@@ -4744,7 +4707,7 @@ func renderAttachmentSummary(msg Message) string {
 	}
 	renderedAttachmentIDs := attachmentIDsRenderedInBody(bodyContent)
 
-	attStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#FF8700"))
+	attStyle := lipgloss.NewStyle().Foreground(uiTheme.Warning)
 	lines := make([]string, 0, len(vAtts))
 	for _, att := range vAtts {
 		if strings.HasPrefix(att.ID, "inline-img-") || renderedAttachmentIDs[att.ID] {
@@ -5001,7 +4964,7 @@ func renderReactions(reactions []MessageReaction) string {
 		return ""
 	}
 
-	return lipgloss.NewStyle().Foreground(colDimGray).Render(strings.Join(parts, "  "))
+	return lipgloss.NewStyle().Foreground(uiTheme.Muted).Render(strings.Join(parts, "  "))
 }
 
 func reactionEmoji(t string) string {
@@ -5145,39 +5108,21 @@ func (m Model) renderUrlSelection(w, h int) string {
 		return ""
 	}
 
-	var titleText string
+	titleText := "Copy link"
+	footerActions := [][2]string{{"j/k", "move"}, {"Enter", "copy"}, {"Esc", "cancel"}}
 	if m.app.UrlSelectionOpenMode {
-		titleText = "Select URL to open (Enter to open, Esc/q to cancel):"
-	} else {
-		titleText = "Select URL to yank (Enter/y to copy, Esc/q to cancel):"
+		titleText = "Open link"
+		footerActions[1] = [2]string{"Enter", "open"}
 	}
 
-	title := lipgloss.NewStyle().Foreground(colYellow).Bold(true).Render(titleText)
 	var list strings.Builder
-	list.WriteString(title + "\n\n")
-
 	for i, u := range m.app.UrlsInMessage {
-		prefix := "  "
-		style := lipgloss.NewStyle()
-		if i == m.app.UrlSelectedIndex {
-			prefix = "> "
-			style = style.Foreground(colYellow).Background(colDarkGray)
-		}
-
-		displayURL := u
-		if len(displayURL) > w-10 {
-			displayURL = displayURL[:w-13] + "..."
-		}
-		list.WriteString(style.Render(prefix+displayURL) + "\n")
+		list.WriteString(uiListRow(u, max(1, w-6), i == m.app.UrlSelectedIndex, false) + "\n")
 	}
 
-	box := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(colYellow).
-		Padding(1, 2).
-		Render(list.String())
-
-	return box
+	modalW, modalH := modalDimensions(w, h, 74, 58, 34, 9, 92, 26)
+	context := fmt.Sprintf("%d links", len(m.app.UrlsInMessage))
+	return renderModalFrame(titleText, context, strings.TrimRight(list.String(), "\n"), uiActionHints(footerActions, modalW-4), modalW, modalH, uiTheme.Brand)
 }
 
 // ---------------------------------------------------------------------------
@@ -5371,7 +5316,7 @@ func highlightQuery(text, query string) string {
 		result.WriteString(text[lastOrigByte:origStartByte])
 
 		matchText := text[origStartByte:origEndByte]
-		highlighted := lipgloss.NewStyle().Foreground(colYellow).Bold(true).Render(matchText)
+		highlighted := lipgloss.NewStyle().Foreground(uiTheme.Warning).Bold(true).Render(matchText)
 		result.WriteString(highlighted)
 
 		lastOrigByte = origEndByte
@@ -5527,12 +5472,12 @@ func (m *Model) RebuildSearchPopupResults() {
 	}
 }
 
-// renderSearchPopup draws the beautiful search interface modal on top of screen.
+// renderSearchPopup draws history results and query controls in the shared modal shell.
 func (m Model) renderSearchPopup(w, h int) string {
 	var displayName string
 	if m.channelSelectedIndex >= 0 {
 		if entry := m.activeChannelEntry(); entry != nil {
-			displayName = entry.teamName + " » " + entry.channelName
+			displayName = entry.teamName + " / " + entry.channelName
 		} else {
 			displayName = "Channel"
 		}
@@ -5545,20 +5490,7 @@ func (m Model) renderSearchPopup(w, h int) string {
 		}
 	}
 
-	titleStyle := lipgloss.NewStyle().Foreground(colYellow).Bold(true)
-	titleText := "Search History (Enter to search)"
-	if m.app.SearchQuery != "" {
-		titleText = fmt.Sprintf("Search History: %s | Results for '%s'", displayName, m.app.SearchQuery)
-	}
-	title := titleStyle.Render(titleText)
-
-	instructions := lipgloss.NewStyle().Foreground(colDimGray).Render(
-		" j/k: Nav | y: Yank | u: URL | o: Open URL | Enter: Expand | /: Edit | Esc: Close",
-	)
-
 	var list strings.Builder
-	list.WriteString(title + "\n")
-	list.WriteString(instructions + "\n\n")
 
 	results := m.app.SearchPopupResults
 	msgH := h - 10
@@ -5568,9 +5500,9 @@ func (m Model) renderSearchPopup(w, h int) string {
 
 	if len(results) == 0 {
 		if m.app.SearchQuery == "" {
-			list.WriteString(lipgloss.NewStyle().Foreground(colDimGray).Render("Type a query and press Enter to search.") + "\n")
+			list.WriteString(lipgloss.NewStyle().Foreground(uiTheme.Muted).Render("Type a query and press Enter to search.") + "\n")
 		} else {
-			list.WriteString(lipgloss.NewStyle().Foreground(colDimGray).Render("No matching messages found.") + "\n")
+			list.WriteString(lipgloss.NewStyle().Foreground(uiTheme.Muted).Render("No matching messages found.") + "\n")
 		}
 		// Fill remaining lines to keep height stable
 		for l := 1; l < msgH; l++ {
@@ -5655,7 +5587,7 @@ func (m Model) renderSearchPopup(w, h int) string {
 				}
 				if diff > 1 {
 					gapLines = append(gapLines, "")
-					gapLines = append(gapLines, lipgloss.NewStyle().Foreground(colDimGray).Render("  ─── [gap in history] ───"))
+					gapLines = append(gapLines, lipgloss.NewStyle().Foreground(uiTheme.Faint).Render("  ─── gap in loaded history ───"))
 					gapLines = append(gapLines, "")
 				}
 			}
@@ -5673,25 +5605,23 @@ func (m Model) renderSearchPopup(w, h int) string {
 			}
 
 			isSelected := idx == m.app.SearchPopupSelectedIndex
-			prefix := "  "
-			if isSelected {
-				prefix = "> "
-			}
-
 			var header string
 			if m.isOwn(item.Message) {
 				senderName := "Me"
 				if item.IsMatch {
 					senderName = highlightQuery(senderName, m.app.SearchQuery)
 				}
-				header = lipgloss.NewStyle().Foreground(colGreen).Render(prefix + dateStr + " " + senderName)
+				header = lipgloss.NewStyle().Foreground(uiTheme.OwnMessage).Bold(true).Render(senderName) +
+					lipgloss.NewStyle().Foreground(uiTheme.Faint).Render("  "+dateStr)
 			} else {
 				senderName := sender
 				if item.IsMatch {
 					senderName = highlightQuery(senderName, m.app.SearchQuery)
 				}
-				header = lipgloss.NewStyle().Foreground(colCyan).Render(prefix + senderName + " " + dateStr)
+				header = lipgloss.NewStyle().Foreground(uiTheme.OtherMessage).Bold(true).Render(senderName) +
+					lipgloss.NewStyle().Foreground(uiTheme.Faint).Render("  "+dateStr)
 			}
+			header = uiListRow(header, max(1, w-4), isSelected, false)
 
 			// Render body
 			body := item.Message.GetPlainText()
@@ -5704,7 +5634,7 @@ func (m Model) renderSearchPopup(w, h int) string {
 				if item.IsMatch {
 					subjText = highlightQuery(subjText, m.app.SearchQuery)
 				}
-				subjStyled := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FFFFFF")).Render(subjText)
+				subjStyled := lipgloss.NewStyle().Bold(true).Foreground(uiTheme.Text).Render(subjText)
 				if body != "" {
 					body = subjStyled + "\n" + body
 				} else {
@@ -5722,11 +5652,11 @@ func (m Model) renderSearchPopup(w, h int) string {
 			var itemLines []string
 			itemLines = append(itemLines, header)
 			for _, bl := range bodyLines {
-				lineStyle := lipgloss.NewStyle()
+				lineStyle := lipgloss.NewStyle().Foreground(uiTheme.Text)
 				if isSelected {
-					lineStyle = lineStyle.Background(colDarkGray)
+					lineStyle = lineStyle.Background(uiTheme.SurfaceStrong)
 				}
-				itemLines = append(itemLines, lineStyle.Render("    "+bl))
+				itemLines = append(itemLines, "  "+lineStyle.Render(padRight("  "+fitLine(bl, bodyW), max(1, w-6))))
 			}
 
 			// Check if we have space to draw this item (or if it's the very first item we must draw it)
@@ -5755,38 +5685,36 @@ func (m Model) renderSearchPopup(w, h int) string {
 	m.searchInput.Width = w - 10
 	tiView := m.searchInput.View()
 
-	borderCol := colYellow
+	borderCol := uiTheme.Brand
 	if !m.app.SearchMode {
-		borderCol = colDimGray
+		borderCol = uiTheme.Border
 	}
 
 	inputBox := lipgloss.NewStyle().
 		BorderStyle(lipgloss.RoundedBorder()).
 		BorderForeground(borderCol).
-		Width(w - 6).Height(3).
+		Width(max(1, w-8)).Height(1).
 		Render(lipgloss.JoinHorizontal(lipgloss.Left,
-			lipgloss.NewStyle().Foreground(borderCol).Bold(true).Render("🔍 "),
+			lipgloss.NewStyle().Foreground(borderCol).Bold(true).Render("/ "),
 			tiView,
 		))
 
 	// Render status/loader row above the input box
 	statusText := ""
 	if m.app.SearchStatus != "" {
-		statusText = "  " + lipgloss.NewStyle().Foreground(colYellow).Italic(true).Render(m.app.SearchStatus)
+		statusText = "  " + lipgloss.NewStyle().Foreground(uiTheme.Warning).Render(m.app.SearchStatus)
 	} else if m.app.SearchLoadingMessages {
-		statusText = "  " + lipgloss.NewStyle().Foreground(colYellow).Italic(true).Render("⏳ Searching history in background...")
+		statusText = "  " + lipgloss.NewStyle().Foreground(uiTheme.Warning).Render("Searching history…")
 	}
 
 	list.WriteString(statusText + "\n" + inputBox)
 
-	box := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(colYellow).
-		Padding(1, 2).
-		Width(w).Height(h).
-		Render(list.String())
-
-	return box
+	context := displayName
+	if m.app.SearchQuery != "" {
+		context = fmt.Sprintf("%s  ·  %d results", displayName, len(results))
+	}
+	footer := uiActionHints([][2]string{{"j/k", "move"}, {"Enter", "context"}, {"y", "copy"}, {"u", "links"}, {"/", "query"}, {"Esc", "close"}}, max(1, w-4))
+	return renderModalFrame("Search history", context, list.String(), footer, w, h, uiTheme.Brand)
 }
 
 // handleSearchPopupNavigationKey handles keystrokes inside results list navigation mode.
@@ -6370,16 +6298,7 @@ func (m Model) handleUserSearchNavigationKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 }
 
 func (m Model) renderUserSearchPopup(w, h int) string {
-	titleStyle := lipgloss.NewStyle().Foreground(colCyan).Bold(true)
-	title := titleStyle.Render("Find Local Chat or Start Direct Chat")
-
-	instructions := lipgloss.NewStyle().Foreground(colDimGray).Render(
-		" j/k: Nav | Enter: Open selected chat or typed email | /: Edit | Esc: Close",
-	)
-
 	var list strings.Builder
-	list.WriteString(title + "\n")
-	list.WriteString(instructions + "\n\n")
 
 	items := m.getUserSearchItems()
 	msgH := h - 10
@@ -6389,9 +6308,9 @@ func (m Model) renderUserSearchPopup(w, h int) string {
 
 	if len(items) == 0 {
 		if m.app.UserSearchQuery == "" {
-			list.WriteString(lipgloss.NewStyle().Foreground(colDimGray).Render("Type a name/email and press Enter/arrows.") + "\n")
+			list.WriteString(lipgloss.NewStyle().Foreground(uiTheme.Muted).Render("Type a name or email to find a conversation.") + "\n")
 		} else {
-			list.WriteString(lipgloss.NewStyle().Foreground(colDimGray).Render("No matching local chats or channels found.") + "\n")
+			list.WriteString(lipgloss.NewStyle().Foreground(uiTheme.Muted).Render("No matching chats or channels found.") + "\n")
 		}
 		for l := 1; l < msgH; l++ {
 			list.WriteString("\n")
@@ -6407,10 +6326,6 @@ func (m Model) renderUserSearchPopup(w, h int) string {
 		linesRendered := 0
 		for idx, item := range items {
 			isSelected := idx == m.app.UserSearchSelectedIndex
-			prefix := "  "
-			if isSelected {
-				prefix = "> "
-			}
 
 			var line string
 			switch item.Type {
@@ -6419,23 +6334,13 @@ func (m Model) renderUserSearchPopup(w, h int) string {
 				if item.LocalChat.CachedDisplayName != nil {
 					chatName = *item.LocalChat.CachedDisplayName
 				}
-				tag := lipgloss.NewStyle().Foreground(colGreen).Render("[Local Chat]")
-				lineStr := fmt.Sprintf("%s %s %s", prefix, chatName, tag)
-				if isSelected {
-					line = lipgloss.NewStyle().Background(colDarkGray).Render(lineStr)
-				} else {
-					line = lineStr
-				}
+				tag := uiBadge("CHAT", uiTheme.Success)
+				line = uiListRow(chatName+"  "+tag, max(1, w-4), isSelected, false)
 			case UserSearchItemChannel:
 				chanName := item.Channel.channelName
 				teamName := item.Channel.teamName
-				tag := lipgloss.NewStyle().Foreground(colCyan).Render("[Channel]")
-				lineStr := fmt.Sprintf("%s %s > %s %s", prefix, teamName, chanName, tag)
-				if isSelected {
-					line = lipgloss.NewStyle().Background(colDarkGray).Render(lineStr)
-				} else {
-					line = lineStr
-				}
+				tag := uiBadge("CHANNEL", uiTheme.Accent)
+				line = uiListRow(teamName+" / "+chanName+"  "+tag, max(1, w-4), isSelected, false)
 			}
 
 			list.WriteString(line + "\n")
@@ -6453,37 +6358,31 @@ func (m Model) renderUserSearchPopup(w, h int) string {
 	m.userSearchInput.Width = w - 10
 	tiView := m.userSearchInput.View()
 
-	borderCol := colCyan
+	borderCol := uiTheme.Brand
 	if !m.app.UserSearchMode {
-		borderCol = colDimGray
+		borderCol = uiTheme.Border
 	}
 
 	inputBox := lipgloss.NewStyle().
 		BorderStyle(lipgloss.RoundedBorder()).
 		BorderForeground(borderCol).
-		Width(w - 6).Height(3).
+		Width(max(1, w-8)).Height(1).
 		Render(lipgloss.JoinHorizontal(lipgloss.Left,
-			lipgloss.NewStyle().Foreground(borderCol).Bold(true).Render("🔍 "),
+			lipgloss.NewStyle().Foreground(borderCol).Bold(true).Render("/ "),
 			tiView,
 		))
 
 	statusText := ""
 	if m.app.UserSearchStatus != "" {
-		statusText = "  " + lipgloss.NewStyle().Foreground(colYellow).Italic(true).Render(m.app.UserSearchStatus)
+		statusText = "  " + lipgloss.NewStyle().Foreground(uiTheme.Warning).Render(m.app.UserSearchStatus)
 	} else if m.app.UserSearchLoading {
-		statusText = "  " + lipgloss.NewStyle().Foreground(colYellow).Italic(true).Render("⏳ Opening chat...")
+		statusText = "  " + lipgloss.NewStyle().Foreground(uiTheme.Warning).Render("Opening chat…")
 	}
 
 	list.WriteString(statusText + "\n" + inputBox)
 
-	box := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(colCyan).
-		Padding(1, 2).
-		Width(w).Height(h).
-		Render(list.String())
-
-	return box
+	footer := uiActionHints([][2]string{{"j/k", "move"}, {"Enter", "open"}, {"/", "query"}, {"Esc", "close"}}, max(1, w-4))
+	return renderModalFrame("Find conversation", fmt.Sprintf("%d matches", len(items)), list.String(), footer, w, h, uiTheme.Brand)
 }
 
 // viewableAttachments returns the subset of a message's attachments that should
@@ -6591,8 +6490,8 @@ func (m Model) renderMessagePopup(w, h int) string {
 		timeStr = msgTime.Format("Jan 02, 2006 15:04:05")
 	}
 
-	innerW := w - 6
-	innerH := h - 4
+	innerW := w - 4
+	innerH := h - 5
 	if innerW < 10 {
 		innerW = 10
 	}
@@ -6641,24 +6540,25 @@ func (m Model) renderMessagePopup(w, h int) string {
 		}
 	}
 
+	labelStyle := lipgloss.NewStyle().Foreground(uiTheme.Muted).Bold(true)
 	headerLines := []string{
-		lipgloss.NewStyle().Foreground(colCyan).Bold(true).Render("From: ") + sender,
-		lipgloss.NewStyle().Foreground(colCyan).Bold(true).Render("Date: ") + timeStr,
+		labelStyle.Render("FROM  ") + lipgloss.NewStyle().Foreground(uiTheme.Text).Bold(true).Render(sender),
+		labelStyle.Render("DATE  ") + lipgloss.NewStyle().Foreground(uiTheme.Text).Render(timeStr),
 	}
 	if msg.Subject != "" {
-		headerLines = append(headerLines, lipgloss.NewStyle().Foreground(colCyan).Bold(true).Render("Subject: ")+msg.Subject)
+		headerLines = append(headerLines, labelStyle.Render("SUBJECT  ")+lipgloss.NewStyle().Foreground(uiTheme.Text).Render(msg.Subject))
 	}
 	headerLines = append(headerLines, "")
 
 	vAtts := viewableAttachments(msg)
 	attachmentsLines := []string{}
 	if len(vAtts) > 0 {
-		attHeaderStyle := lipgloss.NewStyle().Foreground(colYellow).Bold(true)
-		attHeader := "Attachments:"
+		attHeaderStyle := lipgloss.NewStyle().Foreground(uiTheme.Brand).Bold(true)
+		attHeader := "ATTACHMENTS"
 		if m.app.AttachmentCursorMode {
-			attHeader += " [Tab:exit | ↑↓:select | Space:preview | Enter:download]"
+			attHeader += lipgloss.NewStyle().Foreground(uiTheme.Muted).Render("  Tab exit · ↑↓ select · Space preview · Enter download")
 		} else if m.app.Features.FilePreview {
-			attHeader += " [Tab to select & download]"
+			attHeader += lipgloss.NewStyle().Foreground(uiTheme.Muted).Render("  Tab to browse")
 		}
 		attachmentsLines = append(attachmentsLines, attHeaderStyle.Render(attHeader))
 		for i, att := range vAtts {
@@ -6677,11 +6577,7 @@ func (m Model) renderMessagePopup(w, h int) string {
 			}
 			lineText := fmt.Sprintf("📎 %s%s%s", name, contentType, urlIndicator)
 			var line string
-			if m.app.AttachmentCursorMode && i == m.app.AttachmentSelectedIndex {
-				line = lipgloss.NewStyle().Foreground(colCyan).Bold(true).Render("  ▶ " + lineText)
-			} else {
-				line = "  " + lineText
-			}
+			line = uiListRow(lineText, contentW, m.app.AttachmentCursorMode && i == m.app.AttachmentSelectedIndex, false)
 			attachmentsLines = append(attachmentsLines, line)
 		}
 	}
@@ -6704,7 +6600,7 @@ func (m Model) renderMessagePopup(w, h int) string {
 	}
 
 	if len(msg.Reactions) > 0 {
-		reactionsLines = append(reactionsLines, lipgloss.NewStyle().Foreground(colYellow).Bold(true).Render("Reactions:"))
+		reactionsLines = append(reactionsLines, lipgloss.NewStyle().Foreground(uiTheme.Brand).Bold(true).Render("REACTIONS"))
 		reactorsW := contentW - 6
 		if reactorsW < 10 {
 			reactorsW = 10
@@ -6723,8 +6619,6 @@ func (m Model) renderMessagePopup(w, h int) string {
 			}
 		}
 	}
-
-	footer := lipgloss.NewStyle().Foreground(colDimGray).Italic(true).Render("Press ESC/q/v/Enter to close | j/k to navigate | J/K to scroll | ctrl+g to open in external editor")
 
 	nonBodyH := len(headerLines) + 1
 	if len(attachmentsLines) > 0 {
@@ -6773,9 +6667,9 @@ func (m Model) renderMessagePopup(w, h int) string {
 			visibleBody = wrappedBody[start:end]
 		}
 
-		headerText := lipgloss.NewStyle().Foreground(colYellow).Bold(true).Render("Message:")
+		headerText := lipgloss.NewStyle().Foreground(uiTheme.Brand).Bold(true).Render("MESSAGE")
 		if len(wrappedBody) > viewportH {
-			headerText += lipgloss.NewStyle().Foreground(colDimGray).Render(fmt.Sprintf(" (Shift+J/K to scroll - %d/%d)", m.app.MessagePopupScrollOffset+1, len(wrappedBody)))
+			headerText += lipgloss.NewStyle().Foreground(uiTheme.Muted).Render(fmt.Sprintf("  Shift+J/K · %d/%d", m.app.MessagePopupScrollOffset+1, len(wrappedBody)))
 		}
 		bodyLines = append(bodyLines, headerText)
 		bodyLines = append(bodyLines, visibleBody...)
@@ -6794,7 +6688,7 @@ func (m Model) renderMessagePopup(w, h int) string {
 		finalLines = append(finalLines, "")
 	}
 
-	targetH := innerH - 1
+	targetH := innerH
 	if len(finalLines) > targetH {
 		finalLines = finalLines[:targetH]
 	} else {
@@ -6802,26 +6696,24 @@ func (m Model) renderMessagePopup(w, h int) string {
 			finalLines = append(finalLines, "")
 		}
 	}
-	finalLines = append(finalLines, footer)
-
 	var combinedContent string
 	if showImagePreview {
 		var previewText string
-		borderColor := colDarkGray
+		borderColor := uiTheme.Border
 		if previewDownloading {
 			previewText = "\n⏳ Loading preview..."
 		} else if previewFailure != "" {
-			borderColor = colRed
+			borderColor = uiTheme.Danger
 			previewText = "\nPreview unavailable\n" + previewFailure + "\n\nSpace: retry"
 		} else {
-			borderColor = colGreen
+			borderColor = uiTheme.Success
 			previewText = ""
 		}
 
 		rightPanelStr := lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(borderColor).
-			Width(previewW).Height(targetH).
+			Width(max(1, previewW-2)).Height(max(1, targetH-2)).
 			Align(lipgloss.Center, lipgloss.Center).
 			Render(previewText)
 
@@ -6831,19 +6723,14 @@ func (m Model) renderMessagePopup(w, h int) string {
 			"  ",
 			rightPanelStr,
 		)
-		combinedContent = leftAndRight + "\n" + fitLine(footer, innerW)
+		combinedContent = leftAndRight
 	} else {
-		combinedContent = strings.Join(fitLines(finalLines, innerW), "\n")
+		combinedContent = strings.Join(fitLines(finalLines[:targetH], innerW), "\n")
 	}
 
-	box := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(colCyan).
-		Padding(1, 2).
-		Width(w).Height(h).
-		Render(combinedContent)
-
-	return box
+	footer := uiActionHints([][2]string{{"j/k", "message"}, {"J/K", "scroll"}, {"y", "copy"}, {"Tab", "files"}, {"Ctrl+G", "editor"}, {"Esc", "close"}}, max(1, w-4))
+	context := fmt.Sprintf("%d of %d", len(m.app.Messages)-m.app.MessageSelectedIndex, len(m.app.Messages))
+	return renderModalFrame("Message details", context, combinedContent, footer, w, h, uiTheme.Brand)
 }
 
 func (m Model) resolveReactorName(chat *Chat, r MessageReaction) string {
@@ -6930,9 +6817,9 @@ func (m Model) openHelp() Model {
 }
 
 func (m Model) getHelpContentLines() []string {
-	labelStyle := lipgloss.NewStyle().Foreground(colYellow).Bold(true)
-	keyStyle := lipgloss.NewStyle().Foreground(colCyan)
-	dimStyle := lipgloss.NewStyle().Foreground(colDimGray)
+	labelStyle := lipgloss.NewStyle().Foreground(uiTheme.Brand).Bold(true)
+	keyStyle := lipgloss.NewStyle().Foreground(uiTheme.Accent).Bold(true)
+	dimStyle := lipgloss.NewStyle().Foreground(uiTheme.Muted)
 
 	sections := []struct {
 		name  string
@@ -6948,6 +6835,7 @@ func (m Model) getHelpContentLines() []string {
 			{"z", "Expand/collapse the message near the viewport"},
 			{"Mouse wheel", "Scroll active messages without changing conversation"},
 			{"Shift+drag", "Select partial visible text with the terminal"},
+			{"Ctrl+B", "Switch list/timeline panes on narrow terminals"},
 			{"Ctrl+u / Ctrl+d", "Scroll messages by half a page"},
 			{"v", "Preview the newest image in loaded messages"},
 			{"i", "Compose new message"},
@@ -7021,7 +6909,7 @@ func (m Model) getHelpContentLines() []string {
 	contentLines = append(contentLines, labelStyle.Render("Optional Features:"))
 	featureState := func(enabled bool) string {
 		if enabled {
-			return lipgloss.NewStyle().Foreground(colGreen).Render("✓ enabled")
+			return lipgloss.NewStyle().Foreground(uiTheme.Success).Render("✓ enabled")
 		}
 		return dimStyle.Render("✗ disabled")
 	}
@@ -7048,15 +6936,8 @@ func (m Model) getHelpContentLines() []string {
 }
 
 func (m Model) clampHelpScrollOffset() {
-	popupH := m.height * 85 / 100
-	if popupH < 10 {
-		popupH = 10
-	}
-	innerH := popupH - 4
-	if innerH < 4 {
-		innerH = 4
-	}
-	viewportH := innerH - 3
+	_, popupH := modalDimensions(m.width, m.height, 74, 86, 38, 12, 96, 44)
+	viewportH := popupH - 5
 	if viewportH < 1 {
 		viewportH = 1
 	}
@@ -7113,17 +6994,10 @@ func (m Model) handleFilePickerKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 }
 
 func (m Model) renderHelpPopup(w, h int) string {
-	dimStyle := lipgloss.NewStyle().Foreground(colDimGray)
-
 	// Ensure HelpScrollOffset is properly clamped (e.g. if terminal resized)
 	m.clampHelpScrollOffset()
 
-	innerH := h - 4
-	if innerH < 4 {
-		innerH = 4
-	}
-
-	viewportH := innerH - 3
+	viewportH := h - 5
 	if viewportH < 1 {
 		viewportH = 1
 	}
@@ -7135,13 +7009,14 @@ func (m Model) renderHelpPopup(w, h int) string {
 		maxScroll = 0
 	}
 
-	var scrollIndicator string
+	context := fmt.Sprintf("%d shortcuts", totalContentLines)
 	if totalContentLines > viewportH {
-		percent := int(float64(m.app.HelpScrollOffset) / float64(maxScroll) * 100)
-		scrollIndicator = fmt.Sprintf(" %s %d%%", dimStyle.Render("• Scroll j/k or ↓/↑ •"), percent)
+		percent := 100
+		if maxScroll > 0 {
+			percent = int(float64(m.app.HelpScrollOffset) / float64(maxScroll) * 100)
+		}
+		context = fmt.Sprintf("j/k scroll · %d%%", percent)
 	}
-
-	title := lipgloss.NewStyle().Foreground(colCyan).Bold(true).Render("Keyboard Shortcuts") + scrollIndicator
 
 	var visibleContent []string
 	if totalContentLines > 0 {
@@ -7158,19 +7033,8 @@ func (m Model) renderHelpPopup(w, h int) string {
 		visibleContent = append(visibleContent, "")
 	}
 
-	var lines []string
-	lines = append(lines, title, "")
-	lines = append(lines, visibleContent...)
-
-	footer := dimStyle.Italic(true).Render("Press ESC / q / ? / h to close")
-	lines = append(lines, footer)
-
-	return lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(colYellow).
-		Padding(1, 2).
-		Width(w).Height(h).
-		Render(strings.Join(lines, "\n"))
+	footer := uiActionHints([][2]string{{"j/k", "scroll"}, {"Esc", "close"}}, max(1, w-4))
+	return renderModalFrame("Keyboard shortcuts", context, strings.Join(visibleContent, "\n"), footer, w, h, uiTheme.Brand)
 }
 
 // ---------------------------------------------------------------------------
@@ -7190,11 +7054,8 @@ func (m Model) handlePresencePopupKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		}
 	case "down", "j":
 		if m.app.PresenceChatMode {
-			popupH := m.height * 65 / 100
-			if popupH < 10 {
-				popupH = 10
-			}
-			availableHeight := popupH - 6
+			_, popupH := modalDimensions(m.width, m.height, 70, 66, 38, 12, 90, 32)
+			availableHeight := popupH - 5
 			if availableHeight < 1 {
 				availableHeight = 1
 			}
@@ -7210,16 +7071,16 @@ func (m Model) handlePresencePopupKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	return m, nil
 }
 
-func presenceAvailabilityColor(availability string) lipgloss.Color {
+func presenceAvailabilityColor(availability string) lipgloss.TerminalColor {
 	switch availability {
 	case "Available":
-		return colGreen
+		return uiTheme.Success
 	case "Busy", "DoNotDisturb":
-		return colRed
+		return uiTheme.Danger
 	case "Away", "BeRightBack":
-		return colYellow
+		return uiTheme.Warning
 	default:
-		return colDimGray
+		return uiTheme.Faint
 	}
 }
 
@@ -7241,28 +7102,24 @@ func presenceAvailabilityIcon(availability string) string {
 }
 
 func (m Model) renderPresencePopup(w, h int) string {
-	innerW := w - 6
+	innerW := w - 4
 	if innerW < 20 {
 		innerW = 20
 	}
 
-	title := lipgloss.NewStyle().Foreground(colCyan).Bold(true).Render("User Presence")
-	labelStyle := lipgloss.NewStyle().Foreground(colCyan).Bold(true)
-	dimStyle := lipgloss.NewStyle().Foreground(colDimGray)
+	labelStyle := lipgloss.NewStyle().Foreground(uiTheme.Muted).Bold(true)
+	dimStyle := lipgloss.NewStyle().Foreground(uiTheme.Muted)
 
 	var lines []string
-	lines = append(lines, title, "")
+	context := m.app.PresenceUserName
 
 	if m.app.PresenceChatMode {
-		lines = append(lines, labelStyle.Render("Chat: ")+m.app.PresenceUserName, "")
 		if m.app.PresenceLoading {
-			lines = append(lines, dimStyle.Render("Loading presence..."))
+			lines = append(lines, dimStyle.Render("Loading presence…"))
 		} else if len(m.app.PresenceChatData) == 0 {
-			lines = append(lines, lipgloss.NewStyle().Foreground(colRed).Render("No presence data available"))
+			lines = append(lines, lipgloss.NewStyle().Foreground(uiTheme.Danger).Render("No presence data available"))
 		} else {
-			headerLines := 4
-			footerLines := 2
-			availableHeight := h - headerLines - footerLines
+			availableHeight := h - 5
 			if availableHeight < 1 {
 				availableHeight = 1
 			}
@@ -7294,24 +7151,21 @@ func (m Model) renderPresencePopup(w, h int) string {
 				if entry.Activity != "" && entry.Activity != entry.Availability {
 					statusLine += dimStyle.Render(" (" + entry.Activity + ")")
 				}
-				lines = append(lines, statusLine)
+				lines = append(lines, uiListRow(statusLine, innerW, false, false))
 			}
 
 			if len(m.app.PresenceChatData) > availableHeight {
-				scrollIndicator := dimStyle.Render(fmt.Sprintf(" (Showing %d-%d of %d, use j/k to scroll)",
+				context = fmt.Sprintf("%s · %d-%d of %d", m.app.PresenceUserName,
 					m.app.PresenceScrollOffset+1,
 					min(m.app.PresenceScrollOffset+availableHeight, len(m.app.PresenceChatData)),
-					len(m.app.PresenceChatData)))
-				lines[2] = labelStyle.Render("Chat: ") + m.app.PresenceUserName + scrollIndicator
+					len(m.app.PresenceChatData))
 			}
 		}
 	} else {
-		lines = append(lines, labelStyle.Render("User: ")+m.app.PresenceUserName, "")
-
 		if m.app.PresenceLoading {
-			lines = append(lines, dimStyle.Render("Loading presence..."))
+			lines = append(lines, dimStyle.Render("Loading presence…"))
 		} else if m.app.PresenceData == nil {
-			lines = append(lines, lipgloss.NewStyle().Foreground(colRed).Render("Presence data unavailable"))
+			lines = append(lines, lipgloss.NewStyle().Foreground(uiTheme.Danger).Render("Presence data unavailable"))
 		} else {
 			p := m.app.PresenceData
 			availColor := presenceAvailabilityColor(p.Availability)
@@ -7326,30 +7180,11 @@ func (m Model) renderPresencePopup(w, h int) string {
 		}
 	}
 
-	footer := dimStyle.Italic(true).Render("Press ESC / q / p to close")
-	innerH := h - 4
-	if innerH < 4 {
-		innerH = 4
-	}
-	for len(lines) < innerH-1 {
-		lines = append(lines, "")
-	}
-	if len(lines) > innerH-1 {
-		lines = lines[:innerH-1]
-	}
-	lines = append(lines, footer)
-
-	borderCol := colCyan
+	footerActions := [][2]string{{"Esc", "close"}}
 	if m.app.PresenceChatMode {
-		borderCol = colGreen
+		footerActions = append([][2]string{{"j/k", "scroll"}}, footerActions...)
 	}
-
-	return lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(borderCol).
-		Padding(1, 2).
-		Width(w).Height(h).
-		Render(strings.Join(lines, "\n"))
+	return renderModalFrame("Presence", context, strings.Join(lines, "\n"), uiActionHints(footerActions, max(1, w-4)), w, h, uiTheme.Success)
 }
 
 // ---------------------------------------------------------------------------
@@ -7366,15 +7201,8 @@ func (m Model) handleUserProfilePopupKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 }
 
 func (m Model) renderUserProfilePopup(w, h int) string {
-	innerW := w - 6
-	if innerW < 20 {
-		innerW = 20
-	}
-	_ = innerW
-
-	title := lipgloss.NewStyle().Foreground(colCyan).Bold(true).Render("User Profile")
-	labelStyle := lipgloss.NewStyle().Foreground(colCyan).Bold(true)
-	dimStyle := lipgloss.NewStyle().Foreground(colDimGray)
+	labelStyle := lipgloss.NewStyle().Foreground(uiTheme.Muted).Bold(true)
+	dimStyle := lipgloss.NewStyle().Foreground(uiTheme.Muted)
 
 	strOr := func(s *string) string {
 		if s == nil || *s == "" {
@@ -7384,55 +7212,39 @@ func (m Model) renderUserProfilePopup(w, h int) string {
 	}
 
 	var lines []string
-	lines = append(lines, title, "")
+	context := "Directory profile"
 
 	if m.app.UserProfileLoading {
-		lines = append(lines, dimStyle.Render("Loading profile..."))
+		lines = append(lines, dimStyle.Render("Loading profile…"))
 	} else if m.app.UserProfileData == nil {
-		lines = append(lines, lipgloss.NewStyle().Foreground(colRed).Render("Profile data unavailable"))
+		lines = append(lines, lipgloss.NewStyle().Foreground(uiTheme.Danger).Render("Profile data unavailable"))
 	} else {
 		p := m.app.UserProfileData
+		context = p.DisplayName
 		lines = append(lines,
-			labelStyle.Render("Name:       ")+p.DisplayName,
+			labelStyle.Render("NAME        ")+lipgloss.NewStyle().Foreground(uiTheme.Text).Bold(true).Render(p.DisplayName),
 		)
 		if p.Mail != nil && *p.Mail != "" {
-			lines = append(lines, labelStyle.Render("Email:      ")+*p.Mail)
+			lines = append(lines, labelStyle.Render("EMAIL       ")+*p.Mail)
 		} else if p.UserPrincipalName != nil && *p.UserPrincipalName != "" {
-			lines = append(lines, labelStyle.Render("UPN:        ")+*p.UserPrincipalName)
+			lines = append(lines, labelStyle.Render("UPN         ")+*p.UserPrincipalName)
 		}
 		if m.app.Features.ProfileExtended {
 			lines = append(lines,
-				labelStyle.Render("Job Title:  ")+strOr(p.JobTitle),
-				labelStyle.Render("Department: ")+strOr(p.Department),
-				labelStyle.Render("Office:     ")+strOr(p.OfficeLocation),
+				labelStyle.Render("JOB TITLE   ")+strOr(p.JobTitle),
+				labelStyle.Render("DEPARTMENT  ")+strOr(p.Department),
+				labelStyle.Render("OFFICE      ")+strOr(p.OfficeLocation),
 			)
 			if p.MobilePhone != nil && *p.MobilePhone != "" {
-				lines = append(lines, labelStyle.Render("Mobile:     ")+*p.MobilePhone)
+				lines = append(lines, labelStyle.Render("MOBILE      ")+*p.MobilePhone)
 			}
 		} else {
-			lines = append(lines, "", dimStyle.Italic(true).Render("Enable 'user_profile_extended' in config.json for job title, department, and more."))
+			lines = append(lines, "", dimStyle.Render("Extended profile fields are disabled in config.json."))
 		}
 	}
 
-	footer := dimStyle.Italic(true).Render("Press ESC / q / i to close")
-	innerH := h - 4
-	if innerH < 4 {
-		innerH = 4
-	}
-	for len(lines) < innerH-1 {
-		lines = append(lines, "")
-	}
-	if len(lines) > innerH-1 {
-		lines = lines[:innerH-1]
-	}
-	lines = append(lines, footer)
-
-	return lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(colGreen).
-		Padding(1, 2).
-		Width(w).Height(h).
-		Render(strings.Join(lines, "\n"))
+	footer := uiActionHints([][2]string{{"Esc", "close"}}, max(1, w-4))
+	return renderModalFrame("Profile", context, strings.Join(lines, "\n"), footer, w, h, uiTheme.Success)
 }
 
 // ---------------------------------------------------------------------------
@@ -7942,28 +7754,21 @@ func (m Model) loadChannelMessages(teamID string, channelID string) (Model, tea.
 }
 
 func (m Model) renderFilePickerPopup(w, h int) string {
-	title := lipgloss.NewStyle().Foreground(colCyan).Bold(true).Render("Select File to Attach")
-
-	currentDir := lipgloss.NewStyle().Foreground(colWhite).Bold(true).Render("Directory: " + m.filepicker.CurrentDirectory)
-	sortMode := lipgloss.NewStyle().Foreground(colYellow).Render(fmt.Sprintf("Sorted by: %s (%s)", m.filepicker.SortBy.String(), m.filepicker.SortOrder.String()))
+	sortMode := lipgloss.NewStyle().Foreground(uiTheme.Muted).Render(fmt.Sprintf("Sorted by %s · %s", m.filepicker.SortBy.String(), m.filepicker.SortOrder.String()))
 	visible, total := m.filepicker.MatchCount()
 	query := m.filepicker.Query
 	if query == "" {
-		query = lipgloss.NewStyle().Foreground(colDimGray).Render("Filter files...")
+		query = lipgloss.NewStyle().Foreground(uiTheme.Faint).Render("Filter files…")
 	}
-	filterLine := lipgloss.NewStyle().Foreground(colCyan).Bold(true).Render("FILTER ") + query + lipgloss.NewStyle().Foreground(colCyan).Render("▌")
-	matchCount := lipgloss.NewStyle().Foreground(colDimGray).Render(fmt.Sprintf("%d / %d", visible, total))
+	filterLine := lipgloss.NewStyle().Foreground(uiTheme.Brand).Bold(true).Render("FILTER  ") + query + lipgloss.NewStyle().Foreground(uiTheme.Brand).Render("▌")
+	matchCount := lipgloss.NewStyle().Foreground(uiTheme.Muted).Render(fmt.Sprintf("%d / %d", visible, total))
 	filterLine = fitLine(filterLine, max(w-16, 10)) + "  " + matchCount
 
 	var lines []string
-	lines = append(lines, title, currentDir, filterLine, sortMode, "")
+	lines = append(lines, filterLine, sortMode, "")
 
 	lines = append(lines, m.filepicker.View())
 
-	return lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(colGreen).
-		Padding(1, 2).
-		Width(w).Height(h).
-		Render(strings.Join(lines, "\n"))
+	footer := uiActionHints([][2]string{{"↑↓", "move"}, {"Enter", "select"}, {"s", "sort"}, {"Esc", "close"}}, max(1, w-4))
+	return renderModalFrame("Attach file", m.filepicker.CurrentDirectory, strings.Join(lines, "\n"), footer, w, h, uiTheme.Success)
 }

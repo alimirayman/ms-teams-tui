@@ -226,6 +226,7 @@ Press `?` in the app for the contextual help popup.
 | `Ctrl+u` / `Ctrl+d` | Scroll half a page |
 | Mouse wheel | Scroll the active message timeline without changing the selected chat or channel |
 | `Shift` + mouse drag | Select part of the visible text using the terminal's native selection |
+| `Ctrl+B` | Switch between the conversation list and timeline on narrow terminals |
 | `m` | Enter message-selection mode |
 | `z` | Expand or collapse the message near the viewport |
 | `i` | Compose a message |

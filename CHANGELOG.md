@@ -2,6 +2,18 @@
 
 All notable changes to `ms-teams-tui` are documented here. This project uses semantic versioning.
 
+## 0.7.0 - 2026-07-15
+
+### Added
+
+- A responsive workspace that keeps the full chat and channel experience on wide terminals and provides a focused single-pane view on narrow terminals, with `Ctrl+B` to switch between the conversation list and timeline.
+- A semantic adaptive theme and shared visual primitives for section headers, selections, badges, action hints, status feedback, and modal surfaces.
+
+### Changed
+
+- Reworked the sidebar, conversation header, message timeline, selected-message actions, composer, status bar, and secondary dialogs into a calmer and more consistent power-user interface without removing existing commands.
+- Grouped consecutive messages from the same sender, introduced day separators, and replaced high-noise full-row highlighting with focused accent treatments.
+
 ## 0.6.0 - 2026-07-15
 
 ### Added

@@ -97,6 +97,7 @@ type App struct {
 	MaxScroll                  int
 	ChatScrollOffset           int
 	ChannelScrollOffset        int
+	CompactListVisible         bool
 	SnapToBottom               bool
 	MessageSelectedIndex       int
 	MessageSelectionMode       bool
@@ -235,6 +236,7 @@ type SearchPopupItem struct {
 func NewApp() *App {
 	return &App{
 		Status:                    "Loading...",
+		CompactListVisible:        true,
 		SnapToBottom:              true,
 		NotificationMode:          NotificationNone,
 		NotificationShowPreview:   false,

@@ -74,10 +74,10 @@ func renderLegacyCardContent(content string) string {
 }
 
 func renderLegacyCardObject(card map[string]any, lines *[]string, root bool) {
-	appendCardText(lines, stringValue(card["title"]), lipgloss.NewStyle().Bold(true).Foreground(colWhite))
-	appendCardText(lines, stringValue(card["subtitle"]), lipgloss.NewStyle().Foreground(colDimGray))
+	appendCardText(lines, stringValue(card["title"]), lipgloss.NewStyle().Bold(true).Foreground(uiTheme.Text))
+	appendCardText(lines, stringValue(card["subtitle"]), lipgloss.NewStyle().Foreground(uiTheme.Muted))
 	appendCardText(lines, stringValue(card["activityTitle"]), lipgloss.NewStyle().Bold(true))
-	appendCardText(lines, stringValue(card["activitySubtitle"]), lipgloss.NewStyle().Foreground(colDimGray))
+	appendCardText(lines, stringValue(card["activitySubtitle"]), lipgloss.NewStyle().Foreground(uiTheme.Muted))
 	appendCardText(lines, stringValue(card["activityText"]), lipgloss.NewStyle())
 	appendCardText(lines, stringValue(card["text"]), lipgloss.NewStyle())
 
@@ -88,10 +88,10 @@ func renderLegacyCardObject(card map[string]any, lines *[]string, root bool) {
 
 	if code := strings.TrimSpace(stringValue(card["code"])); code != "" {
 		if language := strings.TrimSpace(stringValue(card["language"])); language != "" {
-			*lines = append(*lines, lipgloss.NewStyle().Foreground(colDimGray).Render(language))
+			*lines = append(*lines, lipgloss.NewStyle().Foreground(uiTheme.Muted).Render(language))
 		}
 		for _, line := range strings.Split(strings.ReplaceAll(code, "\r\n", "\n"), "\n") {
-			*lines = append(*lines, lipgloss.NewStyle().Foreground(colWhite).Render("  "+line))
+			*lines = append(*lines, lipgloss.NewStyle().Foreground(uiTheme.Text).Render("  "+line))
 		}
 	}
 
@@ -104,7 +104,7 @@ func renderLegacyCardObject(card map[string]any, lines *[]string, root bool) {
 	for _, section := range anySlice(card["sections"]) {
 		if child, ok := section.(map[string]any); ok {
 			if len(*lines) > 0 {
-				*lines = append(*lines, lipgloss.NewStyle().Foreground(colDimGray).Render("────────────────────────"))
+				*lines = append(*lines, lipgloss.NewStyle().Foreground(uiTheme.Border).Render("────────────────────────"))
 			}
 			renderLegacyCardObject(child, lines, false)
 		}
@@ -169,7 +169,7 @@ func renderLegacyFacts(facts []any, lines *[]string) {
 		if value == "" {
 			value = "-"
 		}
-		styledTitle := lipgloss.NewStyle().Bold(true).Foreground(colWhite).Render(padRight(title, maxTitle))
+		styledTitle := lipgloss.NewStyle().Bold(true).Foreground(uiTheme.Text).Render(padRight(title, maxTitle))
 		*lines = append(*lines, styledTitle+"  "+value)
 	}
 }
@@ -192,7 +192,7 @@ func appendReceiptPrice(item map[string]any, lines *[]string) {
 	if quantity != "" {
 		value = quantity + " × " + price
 	}
-	*lines = append(*lines, lipgloss.NewStyle().Foreground(colDimGray).Render(value))
+	*lines = append(*lines, lipgloss.NewStyle().Foreground(uiTheme.Muted).Render(value))
 }
 
 func renderLegacyActions(actions []any, lines *[]string) {
@@ -212,7 +212,7 @@ func renderLegacyActions(actions []any, lines *[]string) {
 		if target != "" {
 			*lines = append(*lines, renderAdaptiveMarkdown(fmt.Sprintf("[%s](%s)", title, target)))
 		} else {
-			*lines = append(*lines, lipgloss.NewStyle().Foreground(colCyan).Render("["+title+"]"))
+			*lines = append(*lines, lipgloss.NewStyle().Foreground(uiTheme.Accent).Render("["+title+"]"))
 		}
 	}
 }
@@ -243,7 +243,7 @@ func renderAdaptiveElements(elements []any, lines *[]string) {
 		}
 		typeName := strings.ToLower(stringValue(element["type"]))
 		if boolValue(element["separator"]) && len(*lines) > 0 {
-			*lines = append(*lines, lipgloss.NewStyle().Foreground(colDimGray).Render("────────────────────────"))
+			*lines = append(*lines, lipgloss.NewStyle().Foreground(uiTheme.Border).Render("────────────────────────"))
 		}
 
 		switch typeName {
@@ -256,10 +256,10 @@ func renderAdaptiveElements(elements []any, lines *[]string) {
 			weight := strings.ToLower(stringValue(element["weight"]))
 			size := strings.ToLower(stringValue(element["size"]))
 			if weight == "bolder" || weight == "bold" || size == "large" || size == "extralarge" {
-				style = style.Bold(true).Foreground(colWhite)
+				style = style.Bold(true).Foreground(uiTheme.Text)
 			}
 			if boolValue(element["isSubtle"]) || weight == "lighter" {
-				style = style.Foreground(colDimGray)
+				style = style.Foreground(uiTheme.Muted)
 			}
 			*lines = append(*lines, style.Render(text))
 
@@ -292,7 +292,7 @@ func renderAdaptiveElements(elements []any, lines *[]string) {
 				if value == "" {
 					value = "-"
 				}
-				title = lipgloss.NewStyle().Bold(true).Foreground(colWhite).Render(padRight(title, maxTitle))
+				title = lipgloss.NewStyle().Bold(true).Foreground(uiTheme.Text).Render(padRight(title, maxTitle))
 				*lines = append(*lines, title+"  "+value)
 			}
 
@@ -338,7 +338,7 @@ func renderAdaptiveActions(actions []any, lines *[]string) {
 			*lines = append(*lines, renderAdaptiveMarkdown(fmt.Sprintf("[%s](%s)", title, target)))
 			continue
 		}
-		*lines = append(*lines, lipgloss.NewStyle().Foreground(colCyan).Render("["+title+"]"))
+		*lines = append(*lines, lipgloss.NewStyle().Foreground(uiTheme.Accent).Render("["+title+"]"))
 	}
 }
 
@@ -404,7 +404,7 @@ func renderAdaptiveMarkdown(text string) string {
 	for _, target := range ExtractURLs(html) {
 		diagnostic := " (" + target + ")"
 		rendered = strings.ReplaceAll(rendered, diagnostic, "")
-		styledDiagnostic := lipgloss.NewStyle().Foreground(colDimGray).Render(diagnostic)
+		styledDiagnostic := lipgloss.NewStyle().Foreground(uiTheme.Muted).Render(diagnostic)
 		rendered = strings.ReplaceAll(rendered, styledDiagnostic, "")
 	}
 	return rendered
